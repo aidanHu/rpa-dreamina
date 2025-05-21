@@ -1,0 +1,9 @@
+{
+  "dreamina_page": {
+    "file_size_button_xpath": "//*[@id=\"lv-tabs-0-panel-0\"]/div/div/div/div/div[1]/div[5]/div[2]/div/div[1]/div[2]/div[8]/div[1]/div",
+    "prompt_input_xpath": "//*[@id=\"promptRickInput\"]/div",
+    "generate_button_css_selector": "div.generateContent-RiLRrb",
+    "generated_image_css_selector": "div.imageContainer-JMoE9v img.image-G36sd1",
+    "general_record_block_xpath": "//div[starts-with(@id, 'item_') and contains(@id, '_record-') and not(contains(@id, '_record-mock_history_record_id__')) and .//div[contains(@class, 'result-uEEwco')]]"
+  }
+} 
