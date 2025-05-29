@@ -1,0 +1,111 @@
+{
+  "urls": {
+    "home": "https://dreamina.capcut.com/",
+    "login": "https://dreamina.capcut.com/ai-tool/login",
+    "image_generate": "https://dreamina.capcut.com/ai-tool/image/generate"
+  },
+  "elements": {
+    "home_page": {
+      "sign_in_button": "(//a[@href='/ai-tool/login']//button[@id='loginButton'])[1]"
+    },
+    "login_page": {
+      "user_agreement_checkbox": "//label//span//div[contains(@class, 'lv-checkbox-mask')]",
+      "sign_in_button_modal": "//div[contains(@class, 'loginButton') and text()='Sign in']"
+    },
+    "sign_in_modal": {
+      "continue_with_email": "//span[contains(@class, 'lv_new_third_part_sign_in_expand-label') and text()='Continue with email']",
+      "sign_up_link": "//span[contains(@class, 'new-forget-pwd-btn') and text()='Sign up']"
+    },
+    "registration_form": {
+      "email_input": "//input[contains(@placeholder, 'email')]",
+      "password_input": "//input[@type='password' and contains(@placeholder, 'password')]",
+      "continue_button": "//button[contains(@class, 'lv_new_sign_in_panel_wide-sign-in-button')]//span[text()='Continue']",
+      "verification_code_input": "//div[contains(@class, 'verification_code_input-wrapper')]//input",
+      "verification_code_inputs_fallback": [
+        "//input[contains(@placeholder, 'code')]",
+        "//input[contains(@placeholder, 'Code')]",
+        "//input[contains(@placeholder, 'verification')]",
+        "//input[@type='text' and contains(@class, 'verification')]",
+        "//div[contains(@class, 'code')]//input",
+        "//div[contains(@class, 'verify')]//input"
+      ]
+    },
+    "birthday_form": {
+      "year_input": "//input[@placeholder='Year']",
+      "month_dropdown": "//div[@aria-controls='lv-select-popup-0']",
+      "month_option": "//div[@id='lv-select-popup-0']//li[@role='option' and normalize-space()='{month}']",
+      "day_dropdown": "//div[@aria-controls='lv-select-popup-1']",
+      "day_option": "//div[@id='lv-select-popup-1']//li[@role='option' and normalize-space()='{day}']",
+      "next_button": "//button[contains(@class, 'lv-btn-primary')]//span[text()='Next']"
+    },
+    "success_modal": {
+      "ok_button": "//button//span[text()='OK']/parent::button"
+    },
+    "image_generation": {
+      "prompt_input": "//*[@id='promptRickInput']/div",
+      "generate_button": "//div[contains(@class, 'generateButton') and contains(@class, 'mwebButton') and not(contains(@class, 'disabled'))]",
+      "queueing_status": "//div[contains(text(), 'Queueing up for generation...')]",
+      "generating_status": "//div[contains(@class, 'successContentContainer') and count(.//img[contains(@src, 'loading-gyro-large')]) = 4]",
+      "completed_container": "//div[@id and contains(@class, 'item-') and starts-with(@id, 'item_')][1]//div[contains(@class, 'successContentContainer-')]",
+      "generated_images": "img[src^='https://']"
+    },
+    "aspect_ratio_selection": {
+      "21:9": "//div[contains(text(), '21:9')]/parent::div",
+      "16:9": "//div[contains(text(), '16:9')]/parent::div",
+      "3:2": "//div[contains(text(), '3:2')]/parent::div",
+      "4:3": "//div[contains(text(), '4:3')]/parent::div",
+      "1:1": "//div[contains(text(), '1:1')]/parent::div",
+      "3:4": "//div[contains(text(), '3:4')]/parent::div",
+      "2:3": "//div[contains(text(), '2:3')]/parent::div",
+      "9:16": "//div[contains(text(), '9:16')]/parent::div"
+    },
+    "points_monitoring": {
+      "primary_selector": "//span[contains(@class, 'creditText')]",
+      "fallback_selectors": [
+        "//span[contains(text(), '积分') or contains(text(), 'points') or contains(text(), 'Points')]",
+        "//*[contains(text(), '剩余') and contains(text(), '积分')]",
+        "//*[contains(text(), 'remaining') and contains(text(), 'points')]"
+      ]
+    },
+    "common": {
+      "loading_indicator": "//div[contains(@class, 'loading')]",
+      "error_message": "//div[contains(@class, 'error') or contains(@class, 'warn')]",
+      "dropdown_options": [
+        "//div[@role='option' and text()='{option_value}']",
+        "//li[@role='option' and text()='{option_value}']",
+        "//div[contains(@class, 'option') and text()='{option_value}']",
+        "//li[contains(@class, 'option') and text()='{option_value}']",
+        "//*[@role='option' and text()='{option_value}']",
+        "//*[contains(@class, 'select-option') and text()='{option_value}']"
+      ],
+      "text_search_selectors": [
+        "//*[contains(text(), '{option_value}') and not(self::script) and not(self::style)]",
+        "//span[contains(text(), '{option_value}')]",
+        "//div[contains(text(), '{option_value}')]",
+        "//li[contains(text(), '{option_value}')]"
+      ]
+    },
+    "logout": {
+      "user_avatar": "//div[contains(@class, 'avatarContainer-WGzYIp')]//img[@alt='avatar']",
+      "dropdown_menu": "//*[@id='userLoginDropDown']",
+      "sign_out_button": "//div[@role='menuitem' and text()='Sign out']"
+    }
+  },
+  "wait_times": {
+    "page_load": 3,
+    "element_wait": 10,
+    "after_click": 2,
+    "modal_appear": 3,
+    "verification_code": 60,
+    "generation_timeout": 1800,
+    "queue_timeout": 1800,
+    "image_load_timeout": 120,
+    "poll_interval": 5,
+    "task_interval": 3,
+    "startup_delay": 5
+  },
+  "months": [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"
+  ]
+} 

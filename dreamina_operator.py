@@ -1,540 +1,717 @@
-import time
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
-import re # For sanitizing filenames
-import requests # For downloading image from URL
-import base64 # For decoding base64 image data
-from urllib.parse import urlparse
-# from playwright.sync_api import Playwright, sync_playwright, TimeoutError as PlaywrightTimeoutError # Old import
-from playwright.sync_api import Playwright, sync_playwright
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-import json # 导入json模块
-# import argparse # argparse 不再需要，因为脚本将通过函数调用接收参数
+import time
+import random
+import re
+import base64
+import io
+import requests
+from playwright.sync_api import sync_playwright
 
-# --- 全局选择器配置 --- #
-SELECTORS_CONFIG_PATH = "selectors_config.json"
-SELECTORS = None
+try:
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import Error as PlaywrightError
+except ImportError:
+    # 兼容不同版本的 Playwright
+    PlaywrightTimeoutError = Exception
+    PlaywrightError = Exception
 
-def load_selectors_config():
-    global SELECTORS
-    try:
-        with open(SELECTORS_CONFIG_PATH, 'r', encoding='utf-8') as f:
-            SELECTORS = json.load(f)
-        if not SELECTORS or 'dreamina_page' not in SELECTORS:
-            print(f"[DreaminaOperator] 错误: 选择器配置文件 '{SELECTORS_CONFIG_PATH}' 格式不正确或缺少 'dreamina_page' 部分。将使用内部默认值。")
-            SELECTORS = None # 强制使用默认值
-        else:
-            print(f"[DreaminaOperator] 已成功加载选择器配置: {SELECTORS_CONFIG_PATH}")
-    except FileNotFoundError:
-        print(f"[DreaminaOperator] 警告: 选择器配置文件 '{SELECTORS_CONFIG_PATH}' 未找到。将使用内部默认值。")
-        SELECTORS = None
-    except json.JSONDecodeError:
-        print(f"[DreaminaOperator] 错误: 解析选择器配置文件 '{SELECTORS_CONFIG_PATH}' 失败。将使用内部默认值。")
-        SELECTORS = None
-    except Exception as e:
-        print(f"[DreaminaOperator] 加载选择器配置时发生未知错误: {e}。将使用内部默认值。")
-        SELECTORS = None
+from element_config import get_element, get_wait_time
+from points_monitor import PointsMonitor
+from playwright_compat import safe_title, safe_is_visible
+from smart_delay import smart_delay
 
-# 定义默认选择器，以防配置文件加载失败或缺少键
-DEFAULT_SELECTORS = {
-    "dreamina_page": {
-        "file_size_button_xpath": "//*[@id=\\\"lv-tabs-0-panel-0\\\"]/div/div/div/div/div[1]/div[5]/div[2]/div/div[1]/div[2]/div[8]/div[1]/div",
-        "prompt_input_xpath": "//*[@id=\\\"promptRickInput\\\"]/div",
-        "generate_button_css_selector": "div.generateContent-RiLRrb",
-        "generated_image_css_selector": "div.imageContainer-JMoE9v img.image-G36sd1",
-        "general_record_block_xpath": "//div[starts-with(@id, 'item_') and contains(@id, '_record-') and not(contains(@id, '_record-mock_history_record_id__')) and .//div[contains(@class, 'result-uEEwco')]]",
-        "server_busy_error_xpath": ".//div[@class='warningText-BwoChT' and contains(text(), 'The server is busy at the moment. Try again later.')]",
-        "community_guidelines_violation_xpath": ".//div[@class='text-nIol2d' and contains(text(), 'The prompt may contain content that violates our Community Guidelines. Change it and try again.')]",
-        "credit_text_xpath": "//div[contains(@class, 'creditWrapper-iTl7Wc')]//span[@class='creditText-OocMai']"
-    }
-}
+# 尝试导入PIL用于图片格式转换
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+    print("[DreaminaOperator] PIL 可用，将支持图片格式转换")
+except ImportError:
+    PIL_AVAILABLE = False
+    print("[DreaminaOperator] PIL 不可用，将直接保存原始图片格式")
 
-load_selectors_config() # 程序启动时加载一次配置
+# 默认图片保存路径（作为备用）
+IMAGE_SAVE_PATH = "generated_images"
 
-def get_selector(key_path):
-    """ Helper function to get a selector string using a dot-separated key path from the loaded SELECTORS or DEFAULT_SELECTORS. """
-    global SELECTORS, DEFAULT_SELECTORS
-    keys = key_path.split('.')
-    current_level_selectors = SELECTORS
-    if current_level_selectors:
-        try:
-            for key in keys:
-                current_level_selectors = current_level_selectors[key]
-            if isinstance(current_level_selectors, str):
-                # print(f"[SelectorDebug] Using selector from config for '{key_path}': {current_level_selectors}")
-                return current_level_selectors
-        except KeyError:
-            # print(f"[SelectorDebug] Key '{key_path}' not found in loaded config. Falling back to default.")
-            pass # Fall through to default if key not found
-        except TypeError: # If a level is not a dict
-            # print(f"[SelectorDebug] Config structure error for '{key_path}'. Falling back to default.")
-            pass 
+def sanitize_filename(prompt, max_length=10, for_folder=False):
+    """
+    清理文件名，移除不合法字符，并限制提示词部分为10个字符
+    """
+    # 移除或替换不合法字符
+    sanitized = re.sub(r'[<>:"/\\|?*]', '_', prompt)
+    sanitized = re.sub(r'[\r\n\t]', ' ', sanitized)
+    sanitized = re.sub(r'\s+', '_', sanitized.strip())
     
-    # Fallback to default selectors
-    current_level_default = DEFAULT_SELECTORS
-    try:
-        for key in keys:
-            current_level_default = current_level_default[key]
-        if isinstance(current_level_default, str):
-            # print(f"[SelectorDebug] Using DEFAULT selector for '{key_path}': {current_level_default}")
-            return current_level_default
-    except KeyError:
-        print(f"[DreaminaOperator] 严重错误: 选择器键 '{key_path}' 在默认配置中也未找到！")
-    except Exception as e_def:
-        print(f"[DreaminaOperator] 严重错误: 获取默认选择器 '{key_path}' 时出错: {e_def}")
-    return None # Should not happen if defaults are correct
-
-# --- Configuration for generate_image_on_page ---
-IMAGE_SAVE_PATH = "generated_images" # Folder to save images
-# Ensure this folder exists, create if not
-if not os.path.exists(IMAGE_SAVE_PATH):
-    os.makedirs(IMAGE_SAVE_PATH)
-    print(f"[DreaminaOperator] Created folder for generated images: {IMAGE_SAVE_PATH}")
-
-MAX_GENERATION_WAIT_SECONDS = 300 # 增加到5分钟
-POLL_INTERVAL_SECONDS = 3
-MIN_EXPECTED_IMAGES = 4 # 根据用户反馈，一次通常生成4张图片
-OLD_SRC_SOAK_TIME_SECONDS = 15 # 新增：当结果块使用旧SRC时，需要保持稳定的"浸泡"观察时间
-
-MIN_CREDIT_THRESHOLD = 10 # 低于此积分值则暂停生成
-
-# Helper function to sanitize filename from prompt
-def sanitize_filename(prompt, max_length=100):
-    """Sanitizes a prompt to be a valid filename, supporting Chinese characters."""
-    if not prompt or not prompt.strip(): # 检查原始prompt是否为空或只有空格
-        return "untitled_image"
+    # 限制长度为10个字符
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length]
     
-    sanitized = prompt.strip() # 先去除首尾空格
-    # 步骤1: 将空格和常见非法文件名字符统一替换为下划线
-    sanitized = re.sub(r'[\s/\\:*?"<>|]+', '_', sanitized) 
-    # 步骤2: 移除非字母数字、下划线、连字符、中文字符之外的所有字符
-    # 这个正则表达式允许中文 (\u4e00-\u9fa5)
-    sanitized = re.sub(r'[^a-zA-Z0-9_\-\u4e00-\u9fa5]+', '', sanitized)
-    # 步骤3: 将连续的下划线替换为单个下划线
-    sanitized = re.sub(r'_+', '_', sanitized) 
-    # 步骤4: 移除可能产生的前导或尾随下划线
-    sanitized = sanitized.strip('_')
+    # 确保不以点开头或结尾
+    sanitized = sanitized.strip('.')
 
-    # 步骤5: 如果经过所有清理，字符串变为空，则返回默认名
+    # 如果为空，使用默认名称
     if not sanitized:
-        return "prompt_cleaned_empty" # 或者 "untitled_image_placeholder"
+        sanitized = "default_name"
         
-    return sanitized[:max_length]
+    return sanitized
 
 def navigate_and_setup_dreamina_page(context, target_url):
     """
-    Ensures the Dreamina page is open in the given browser context, performs initial setup (like clicking size button),
-    closes other tabs, and returns the Playwright page object for Dreamina.
-    Args:
-        context: Playwright browser context.
-        target_url (str): The URL for the Dreamina page.
-    Returns:
-        Page object for Dreamina, or None if setup fails.
+    导航到Dreamina页面并进行基本设置
     """
-    print(f"[DreaminaOperator] Setting up Dreamina page: {target_url}")
-    dreamina_page = None
-    page_opened_successfully = False
-
-    # Check if Dreamina page is already open
-    for page_iter in context.pages:
-        if target_url in page_iter.url: # Simple check
-            print(f"[DreaminaOperator] Found existing Dreamina page: {page_iter.url}")
-            dreamina_page = page_iter
-            dreamina_page.bring_to_front()
-            page_opened_successfully = True # Assume already set up if page exists
-            break
-    
-    if not dreamina_page:
-        print(f"[DreaminaOperator] Dreamina page not found. Opening new page and navigating to: {target_url}")
-        dreamina_page = context.new_page()
-        try:
-            dreamina_page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
-            print(f"[DreaminaOperator] Successfully navigated to: {dreamina_page.url}")
-            dreamina_page.bring_to_front()
-            page_opened_successfully = True
-
-            # Click file size button ONLY on new page load/setup
-            # file_size_button_xpath = "//*[@id=\"lv-tabs-0-panel-0\"]/div/div/div/div/div[1]/div[5]/div[2]/div/div[1]/div[2]/div[8]/div[1]/div"
-            # print(f"[DreaminaOperator] Attempting to click file size button (only on new page setup): {file_size_button_xpath}")
-            # file_size_button = dreamina_page.locator(file_size_button_xpath)
-            # file_size_button.wait_for(state="visible", timeout=30000) 
-            # file_size_button.click()
-            # print("[DreaminaOperator] File size button clicked.")
-            # time.sleep(1) 
-        except PlaywrightTimeoutError as pte:
-            print(f"[DreaminaOperator] Timeout navigating to Dreamina page: {pte}")
-            if dreamina_page and not dreamina_page.is_closed(): dreamina_page.close()
-            return None
-        except PlaywrightError as pe:
-            print(f"[DreaminaOperator] Playwright error during navigation: {pe}")
-            if dreamina_page and not dreamina_page.is_closed(): dreamina_page.close()
-            return None
-        except Exception as e:
-            print(f"[DreaminaOperator] Error navigating to Dreamina page: {e}")
-            if dreamina_page and not dreamina_page.is_closed(): dreamina_page.close()
-            return None
-
-    if not (page_opened_successfully and dreamina_page and not dreamina_page.is_closed()):
-        print("[DreaminaOperator] Failed to open or maintain Dreamina page for setup.")
-        return None
-
-    # Always attempt to click the file size button once the page is confirmed to be open and valid.
     try:
-        file_size_button_xpath = get_selector("dreamina_page.file_size_button_xpath")
-        if file_size_button_xpath:
-            print(f"[DreaminaOperator] Attempting to click file size button: {file_size_button_xpath}")
-            file_size_button = dreamina_page.locator(file_size_button_xpath)
-            file_size_button.wait_for(state="visible", timeout=10000) 
-            file_size_button.click(timeout=5000) 
-            print("[DreaminaOperator] File size button click attempted.")
-            time.sleep(1) 
-    except PlaywrightTimeoutError:
-        print("[DreaminaOperator] Timeout waiting for or clicking file size button (this might be okay if already configured or button not always present).")
-    except Exception as e_size_button:
-        print(f"[DreaminaOperator] Error clicking file size button: {e_size_button} (this might be okay).")
-
-    # Close other tabs
-    print("[DreaminaOperator] Closing other tabs...")
-    pages_snapshot = list(context.pages)
-    closed_count = 0
-    for p_iter in pages_snapshot:
-        if p_iter.is_closed() or p_iter == dreamina_page:
-            continue
-        print(f"[DreaminaOperator] Closing tab: {p_iter.url}")
+        # 获取所有页面
+        pages = context.pages
+        
+        if not pages:
+            print("[DreaminaOperator] 没有找到任何页面，创建新页面")
+            page = context.new_page()
+        else:
+            page = pages[0]
+            print(f"[DreaminaOperator] 使用现有页面: {page.url}")
+        
+        # 导航到目标URL
+        if page.url != target_url:
+            print(f"[DreaminaOperator] 导航到: {target_url}")
+            try:
+                # 先尝试等待页面加载完成
+                page.goto(target_url, wait_until="networkidle", timeout=60000)
+            except Exception as e:
+                print(f"[DreaminaOperator] ⚠️ 等待网络空闲超时，尝试使用domcontentloaded: {e}")
+                page.goto(target_url, wait_until="domcontentloaded", timeout=60000)
+        
+        # 等待页面完全加载
+        print("[DreaminaOperator] ⏳ 等待页面完全加载...")
         try:
-            p_iter.close()
-            closed_count +=1
+            page.wait_for_load_state("networkidle", timeout=30000)
         except Exception as e:
-            print(f"[DreaminaOperator] Error closing tab {p_iter.url}: {e}")
-    print(f"[DreaminaOperator] Closed {closed_count} other tabs.")
-    
-    if dreamina_page and not dreamina_page.is_closed():
-        dreamina_page.bring_to_front()
-        print("[DreaminaOperator] 页面已置顶。等待5秒以便历史图片框充分加载...")
-        time.sleep(5) # 增加延时确保历史图片加载
+            print(f"[DreaminaOperator] ⚠️ 等待网络空闲超时: {e}")
         
-        # 在页面设置完成后，立即检查并打印一次积分
-        print("[DreaminaOperator] 页面设置完成，首次检查积分...")
-        check_credits(dreamina_page) # 调用积分检查函数，它会自行打印积分
-    else:
-        print("[DreaminaOperator] Dreamina page became invalid after tab closing.")
-        return None
+        # 确保页面稳定
+        time.sleep(5)
         
-    return dreamina_page
-
-def check_credits(page) -> bool:
-    """检查用户积分是否足够。"""
-    print("[DreaminaOperator] 正在检查用户积分...")
-    credit_selector = get_selector("dreamina_page.credit_text_xpath")
-    if not credit_selector:
-        print("[DreaminaOperator] 错误: 未能加载积分元素选择器! 无法检查积分。")
-        return False # 无法检查，默认失败
-
-    try:
-        credit_element = page.locator(credit_selector)
-        credit_element.wait_for(state="visible", timeout=10000) # 等待元素可见
-        credit_text = credit_element.inner_text()
-        current_credits = int(credit_text.strip())
-        print(f"[DreaminaOperator] 当前积分为: {current_credits}")
-        if current_credits < MIN_CREDIT_THRESHOLD:
-            print(f"[DreaminaOperator] 警告: 积分 ({current_credits}) 低于阈值 ({MIN_CREDIT_THRESHOLD})!")
-            return False
-        return True
-    except PlaywrightTimeoutError:
-        print("[DreaminaOperator] 错误: 检查积分时未能找到积分元素或元素不可见。")
-        return False
-    except ValueError:
-        print(f"[DreaminaOperator] 错误: 无法将积分文本 '{credit_text}' 解析为数字。")
-        return False
+        # 检查页面是否正常加载
+        try:
+            page_title = page.title()
+            print(f"[DreaminaOperator] 📄 页面标题: {page_title}")
+            if not page_title or "Dreamina" not in page_title:
+                print("[DreaminaOperator] ⚠️ 页面可能未正确加载，尝试刷新...")
+                page.reload(wait_until="networkidle", timeout=60000)
+                time.sleep(5)
+        except Exception as e:
+            print(f"[DreaminaOperator] ⚠️ 检查页面标题时出错: {e}")
+        
+        return page
+        
     except Exception as e:
-        print(f"[DreaminaOperator] 检查积分时发生未知错误: {e}")
+        print(f"[DreaminaOperator] ❌ 导航到页面时出错: {e}")
+        return None
+
+def check_page_connection(page):
+    """
+    检查页面连接是否正常
+    """
+    try:
+        if page.is_closed():
+            return False
+        # 尝试获取页面标题来测试连接（兼容不同版本的Playwright）
+        safe_title(page, timeout=5000)
+        return True
+    except Exception as e:
+        print(f"[DreaminaOperator] 页面连接检查失败: {e}")
+        return False
+
+def simple_scroll_down(page, description="简单向下滚动"):
+    """
+    简单的向下滚动功能，鼠标移动到网页右边进行滚动
+    """
+    try:
+        print(f"[DreaminaOperator] 🖱️ 开始{description}...")
+        
+        # 获取页面尺寸
+        page_size = page.evaluate("""() => {
+            return {
+                width: window.innerWidth,
+                height: window.innerHeight
+            };
+        }""")
+        
+        # 移动鼠标到页面右边中间位置
+        right_x = int(page_size['width'] * 0.85)  # 右边85%的位置
+        center_y = page_size['height'] // 2
+        
+        print(f"[DreaminaOperator] 📍 移动鼠标到页面右边 ({right_x}, {center_y})")
+        page.mouse.move(right_x, center_y)
+        time.sleep(0.5)
+
+        # 使用鼠标滚轮向下滚动几次
+        print("[DreaminaOperator] 🔽 在页面右边向下滚动...")
+        for i in range(3):
+            page.mouse.wheel(0, 800)  # 向下滚动800像素
+            time.sleep(1)
+            print(f"[DreaminaOperator] 滚动第 {i+1}/3 次")
+        
+        print("[DreaminaOperator] ✅ 简单滚动完成")
+        return True
+        
+    except Exception as e:
+        print(f"[DreaminaOperator] ❌ 简单滚动失败: {e}")
+        return False
+
+def wait_for_content_and_scroll(page, content_selector, max_wait_seconds=10):
+    """
+    等待内容出现后再简单滚动
+    """
+    try:
+        print(f"[DreaminaOperator] ⏳ 等待内容出现 (最多{max_wait_seconds}秒)...")
+        
+        start_time = time.time()
+        content_appeared = False
+        
+        while time.time() - start_time < max_wait_seconds:
+            # 检查内容是否出现
+            content_count = page.locator(f"xpath={content_selector}").count()
+            
+            if content_count > 0:
+                print("[DreaminaOperator] ✅ 检测到内容出现，准备滚动")
+                content_appeared = True
+                break
+            
+            time.sleep(1)
+        
+        if content_appeared:
+            # 等待一点时间让内容稳定
+            time.sleep(2)
+            
+            # 执行简单滚动
+            scroll_success = simple_scroll_down(page, "等待内容后滚动")
+            return scroll_success
+        else:
+            print("[DreaminaOperator] ⚠️ 内容未出现，执行备用滚动")
+            return simple_scroll_down(page, "备用滚动")
+            
+    except Exception as e:
+        print(f"[DreaminaOperator] 等待内容并滚动时出错: {e}")
+        return False
+
+def select_aspect_ratio(page, aspect_ratio="9:16"):
+    """
+    选择图片尺寸比例
+    """
+    try:
+        print(f"[DreaminaOperator] 🖼️ 选择图片尺寸: {aspect_ratio}")
+        
+        # 从元素配置获取对应的选择器
+        aspect_ratio_selector = get_element("aspect_ratio_selection", aspect_ratio)
+        
+        if not aspect_ratio_selector:
+            print(f"[DreaminaOperator] ⚠️ 未找到尺寸 {aspect_ratio} 的选择器，跳过尺寸选择")
+            return False
+        
+        # 查找并点击对应的尺寸选项
+        aspect_ratio_element = page.locator(f"xpath={aspect_ratio_selector}")
+        
+        # 等待元素可见
+        aspect_ratio_element.wait_for(state="visible", timeout=10000)
+        
+        # 点击尺寸选项
+        aspect_ratio_element.click(timeout=10000)
+        
+        print(f"[DreaminaOperator] ✅ 成功选择图片尺寸: {aspect_ratio}")
+        
+        # 等待选择生效
+        time.sleep(2)
+        
+        return True
+        
+    except Exception as e:
+        print(f"[DreaminaOperator] ❌ 选择图片尺寸失败: {e}")
         return False
 
 def generate_image_on_page(page, prompt_info):
     """
-    输入提示词，点击生成，等待图片加载完成，并保存所有生成的图片。
-    图片会保存在以 prompt_info['source_excel_name'] 命名的子文件夹下。
-    图片文件名基于 prompt_info['prompt']。
-    如果服务器繁忙，会进行重试。
+    输入提示词，选择尺寸，点击生成，等待图片加载完成，并保存所有生成的图片。
     """
+    final_image_elements = []
+
     current_prompt_text = prompt_info['prompt']
     source_folder_name = prompt_info['source_excel_name']
     excel_row_num = prompt_info['row_number']
 
-    current_image_save_path = os.path.join(IMAGE_SAVE_PATH, sanitize_filename(source_folder_name, max_length=50))
+    # 检查页面连接
+    if not check_page_connection(page):
+        print(f"[DreaminaOperator] 页面连接已断开，无法处理提示词: {current_prompt_text}")
+        return final_image_elements
+
+    # 使用新的保存路径（Excel所在的子文件夹）
+    current_image_save_path = prompt_info.get('image_save_path', IMAGE_SAVE_PATH)
+    
+    # 确保保存目录存在
     if not os.path.exists(current_image_save_path):
         try:
             os.makedirs(current_image_save_path)
-            print(f"[DreaminaOperator] 已创建子文件夹: {current_image_save_path}")
+            print(f"[DreaminaOperator] 已创建保存目录: {current_image_save_path}")
         except OSError as e:
-            print(f"[DreaminaOperator] 错误：创建子文件夹 '{current_image_save_path}' 失败: {e}。将尝试保存到主图片文件夹。")
+            print(f"[DreaminaOperator] 错误：创建保存目录 '{current_image_save_path}' 失败: {e}。将尝试保存到默认图片文件夹。")
             current_image_save_path = IMAGE_SAVE_PATH
 
-    prompt_input_xpath = get_selector("dreamina_page.prompt_input_xpath")
-    existing_image_selector = get_selector("dreamina_page.generated_image_css_selector")
-    general_record_block_xpath = get_selector("dreamina_page.general_record_block_xpath")
-    generate_button_selector = get_selector("dreamina_page.generate_button_css_selector")
-    server_busy_error_selector = get_selector("dreamina_page.server_busy_error_xpath")
-    community_guidelines_violation_selector = get_selector("dreamina_page.community_guidelines_violation_xpath")
-
-    if not all([prompt_input_xpath, existing_image_selector, general_record_block_xpath, generate_button_selector, server_busy_error_selector, community_guidelines_violation_selector]):
-        print("[DreaminaOperator] 错误: 一个或多个核心选择器未能加载! 无法继续生成。")
-        return False
-
-    MAX_RETRY_ATTEMPTS = 2
-    current_attempt = 0
-
-    while current_attempt <= MAX_RETRY_ATTEMPTS:
-        # 在每次尝试（包括重试）开始前检查积分
-        if not check_credits(page):
-            print(f"[DreaminaOperator] 积分不足 (低于 {MIN_CREDIT_THRESHOLD})。请充值后手动重新运行脚本。暂停当前图片生成任务。")
-            # 此处返回 False 将导致此提示词处理失败，
-            # 调用此函数的外部脚本需要根据此返回值决定是否完全停止或如何处理暂停逻辑。
-            return False
-
-        print(f"[DreaminaOperator] 开始生成尝试 {current_attempt + 1}/{MAX_RETRY_ATTEMPTS + 1} for prompt (Row {excel_row_num}) '{current_prompt_text}'")
+    try:
+        print(f"[DreaminaOperator] 处理提示词: '{current_prompt_text}' (源: '{source_folder_name}')")
+        print(f"[DreaminaOperator] 图片保存路径: {current_image_save_path}")
         
-        final_image_elements = []
-        block_soak_start_time = {}
-
+        # 生成前检测积分余额
+        print(f"\n[DreaminaOperator] 💰 生成前积分检测...")
         try:
-            prompt_input = page.locator(prompt_input_xpath)
-            prompt_input.wait_for(state="visible", timeout=30000)
-            prompt_input.click()
-            prompt_input.fill("") 
-            prompt_input.fill(current_prompt_text)
-            print("[DreaminaOperator] 提示词已输入.")
-            time.sleep(1)
-
-            previous_image_srcs = set()
-            try:
-                all_img_locators_before_generation = page.locator(existing_image_selector).all()
-                for img_loc in all_img_locators_before_generation:
-                    if img_loc.is_visible(timeout=1000):
-                        src = img_loc.get_attribute("src")
-                        if src and (src.startswith("http") or src.startswith("data:image") or src.startswith("blob:")):
-                            previous_image_srcs.add(src)
-                print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 点击生成前，记录到 {len(previous_image_srcs)} 个可见图片srcs。")
-            except Exception as e_old_src:
-                print(f"[DreaminaOperator] 警告 (尝试 {current_attempt + 1}): 收集旧图片src时出错: {e_old_src}。")
-
-            ids_before_generation = set()
-            try:
-                existing_blocks_locators = page.locator(general_record_block_xpath).all()
-                for block_loc in existing_blocks_locators:
-                    block_id = block_loc.get_attribute('id')
-                    if block_id:
-                        ids_before_generation.add(block_id)
-                print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 点击生成前，记录到 {len(ids_before_generation)} 个结果块ID。")
-            except Exception as e_old_blocks:
-                print(f"[DreaminaOperator] 警告 (尝试 {current_attempt + 1}): 收集旧结果块ID时出错: {e_old_blocks}。")
-
-            print("[DreaminaOperator] 等待 2 秒后点击生成按钮...")
-            time.sleep(2)
-            generate_button = page.locator(generate_button_selector)
-            generate_button.wait_for(state="visible", timeout=30000)
-            generate_button.click(timeout=30000)
-            print("[DreaminaOperator] '生成' 按钮已点击.")
-            print("[DreaminaOperator] 点击生成后，等待2秒以便结果块初步加载...")
-            time.sleep(2)
-
-            print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 开始识别新出现的结果块...")
-            identified_new_block = None
-            NEW_BLOCK_ACQUISITION_TIMEOUT_SECONDS = 60
-            acquisition_loop_start_time = time.time()
-            while time.time() - acquisition_loop_start_time < NEW_BLOCK_ACQUISITION_TIMEOUT_SECONDS:
-                all_current_block_locators = page.locator(general_record_block_xpath).all()
-                for current_block_loc in reversed(all_current_block_locators):
-                    current_block_id = current_block_loc.get_attribute('id')
-                    if current_block_id and current_block_id not in ids_before_generation:
-                        print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 成功识别新结果块 (ID: {current_block_id})。")
-                        identified_new_block = current_block_loc
-                        break
-                if identified_new_block:
-                    break
-                time.sleep(POLL_INTERVAL_SECONDS)
+            points_selector = get_element("points_monitoring", "primary_selector")
+            points_monitor = PointsMonitor(custom_points_selector=points_selector)
+            initial_points = points_monitor.check_points(page, timeout=10000)
             
-            if not identified_new_block:
-                print(f"[DreaminaOperator] 尝试 {current_attempt + 1} 失败: 在 {NEW_BLOCK_ACQUISITION_TIMEOUT_SECONDS} 秒内未能识别出新结果块。")
-                if current_attempt < MAX_RETRY_ATTEMPTS:
-                    print("[DreaminaOperator] 等待10秒后将重试...")
-                    time.sleep(10)
-                    current_attempt += 1
-                    continue
-                else:
-                    print("[DreaminaOperator] 已达到最大重试次数，放弃生成。")
-                    return False
-
-            target_record_block = identified_new_block
-            target_block_id = target_record_block.get_attribute('id')
-
-            # 给新块内容一点稳定时间
-            page.wait_for_timeout(500) 
-
-            # 首先检查是否违反社区准则 (这种错误不需要重试)
-            try:
-                guideline_violation_element = target_record_block.locator(community_guidelines_violation_selector)
-                if guideline_violation_element.is_visible(timeout=5000): # 增加超时
-                    print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 检测到提示词 (Row {excel_row_num}) '{current_prompt_text}' 违反社区准则 (块 ID: {target_block_id})。将跳过此提示词。")
-                    return False # 直接返回失败，主循环应该跳过这个提示词
-            except PlaywrightTimeoutError:
-                # 未找到违反准则的提示，这是正常情况
-                pass 
-            except Exception as e_check_guideline:
-                print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 检查社区准则消息时发生意外错误: {e_check_guideline}。假设无违规。")
-
-            # 接着检查服务器繁忙错误 (这种错误可以重试)
-            try:
-                error_message_element = target_record_block.locator(server_busy_error_selector)
-                if error_message_element.is_visible(timeout=5000): # 增加超时
-                    print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 检测到服务器繁忙错误 (块 ID: {target_block_id})。")
-                    if current_attempt < MAX_RETRY_ATTEMPTS:
-                        print("[DreaminaOperator] 等待15秒后将重试...")
-                        time.sleep(15)
-                        current_attempt += 1
-                        continue
-                    else:
-                        print("[DreaminaOperator] 服务器繁忙，已达到最大重试次数，放弃生成。")
-                        return False
-                else:
-                    print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 未检测到服务器繁忙。继续图片加载检查。")
-            except PlaywrightTimeoutError:
-                print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 检查服务器繁忙消息时未找到(超时)。假设无错误。")
-            except Exception as e_check_busy:
-                print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 检查服务器繁忙消息时发生意外错误: {e_check_busy}。假设无错误。")
-
-            print(f"[DreaminaOperator] 将针对新块 (ID: {target_block_id}) 开始智能等待图片生成 (最多 {MAX_GENERATION_WAIT_SECONDS} 秒)...")
-            overall_image_wait_start_time = time.time()
-            
-            while time.time() - overall_image_wait_start_time < MAX_GENERATION_WAIT_SECONDS:
-                if not target_record_block.is_visible():
-                    print(f"[DreaminaOperator] 错误：目标新块 (ID: {target_block_id}) 已不再可见。此尝试的图片加载失败。")
-                    break 
-
-                images_in_this_block = target_record_block.locator(existing_image_selector).all()
+            if initial_points is not None:
+                print(f"[DreaminaOperator] 💰 生成前积分余额: {initial_points} 分")
                 
-                if not images_in_this_block or len(images_in_this_block) < MIN_EXPECTED_IMAGES:
-                    block_soak_start_time.pop(target_block_id, None)
-                    time.sleep(POLL_INTERVAL_SECONDS)
-                    continue
-
-                all_images_basically_loaded = True
-                current_block_image_details = []
-                for img_loc in images_in_this_block:
-                    if not img_loc.is_visible(timeout=1000):
-                        all_images_basically_loaded = False; break
-                    img_src = img_loc.get_attribute("src")
-                    if not (img_src and (img_src.startswith("http") or img_src.startswith("data:image") or img_src.startswith("blob:"))):
-                        all_images_basically_loaded = False; break
-                    current_block_image_details.append({"locator": img_loc, "src": img_src})
-                
-                if not all_images_basically_loaded:
-                    block_soak_start_time.pop(target_block_id, None)
-                    time.sleep(POLL_INTERVAL_SECONDS)
-                    continue
-
-                are_all_srcs_new = True
-                temp_final_image_elements = []
-                for img_detail in current_block_image_details:
-                    temp_final_image_elements.append(img_detail["locator"])
-                    if img_detail["src"] in previous_image_srcs:
-                        are_all_srcs_new = False
-                
-                if are_all_srcs_new:
-                    print(f"[DreaminaOperator] 目标块 (ID: {target_block_id}) 所有图片的 src 都是全新的！接受。")
-                    final_image_elements = temp_final_image_elements
-                    break 
+                if initial_points < 2:
+                    print(f"[DreaminaOperator] 🚨 积分不足，无法进行生成！当前积分: {initial_points}")
+                    return final_image_elements
+                elif initial_points < 6:
+                    print(f"[DreaminaOperator] ⚠️ 积分余额较低: {initial_points} 分")
                 else:
-                    if target_block_id not in block_soak_start_time:
-                        print(f"[DreaminaOperator] 目标块 (ID: {target_block_id}) src 非全新。开始稳定观察期 ({OLD_SRC_SOAK_TIME_SECONDS}s)。")
-                        block_soak_start_time[target_block_id] = time.time()
-                    elif time.time() - block_soak_start_time[target_block_id] >= OLD_SRC_SOAK_TIME_SECONDS:
-                        print(f"[DreaminaOperator] 目标块 (ID: {target_block_id}) src 非全新，已稳定观察。确认提示词...")
-                        safe_current_prompt_text = current_prompt_text.replace("'", "\\'").replace("\"", "\\\"")
-                        prompt_span_in_block_xpath = f".//span[@class='promptSpan-yzB1oU' and text()='{safe_current_prompt_text}']"
-                        try:
-                            if target_record_block.locator(prompt_span_in_block_xpath).is_visible(timeout=2000):
-                                print(f"[DreaminaOperator] 确认：目标块 (ID: {target_block_id}) 内部仍包含当前提示词。接受此块。")
-                                final_image_elements = temp_final_image_elements
-                                break
-                            else:
-                                print(f"[DreaminaOperator] 警告：目标块 (ID: {target_block_id}) 稳定观察后不含提示词。重置观察。")
-                                block_soak_start_time.pop(target_block_id, None)
-                        except PlaywrightTimeoutError:
-                            print(f"[DreaminaOperator] 警告：检查目标块 (ID: {target_block_id}) 提示词超时。重置观察。")
-                            block_soak_start_time.pop(target_block_id, None)
-                    time.sleep(POLL_INTERVAL_SECONDS)
-                    continue
-
-            if final_image_elements:
-                print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 在最终确定的块 (ID: {target_block_id}) 中找到 {len(final_image_elements)} 张图片。开始保存...")
-                saved_count = 0
-                for i, img_element in enumerate(final_image_elements):
-                    image_src = img_element.get_attribute("src")
-                    if not image_src:
-                        print(f"[DreaminaOperator] 警告: (Row {excel_row_num}) 第 {i+1} 张图片的 src 意外为空，跳过。")
-                        continue
-                    
-                    filename_prompt_part = sanitize_filename(current_prompt_text)
-                    image_filename = f"{excel_row_num}_{filename_prompt_part}_img{i+1}.jpg"
-                    full_save_path = os.path.join(current_image_save_path, image_filename)
-
-                    try:
-                        if image_src.startswith('data:image'):
-                            header, encoded = image_src.split(',', 1)
-                            image_data = base64.b64decode(encoded)
-                            with open(full_save_path, 'wb') as f: f.write(image_data)
-                            saved_count += 1
-                        elif image_src.startswith('http'):
-                            img_response = requests.get(image_src, timeout=60)
-                            img_response.raise_for_status()
-                            with open(full_save_path, 'wb') as f: f.write(img_response.content)
-                            saved_count += 1
-                        elif image_src.startswith('blob:'):
-                            img_element.screenshot(path=full_save_path, type='jpeg')
-                            saved_count += 1
-                        else:
-                            print(f"[DreaminaOperator] (Row {excel_row_num}) 未识别的图片源格式: {image_src[:60]}...")
-                    except Exception as e_save:
-                        print(f"[DreaminaOperator] (Row {excel_row_num}) 保存图片 {full_save_path} 时出错: {e_save}")
-                
-                if saved_count >= MIN_EXPECTED_IMAGES:
-                    print(f"[DreaminaOperator] 尝试 {current_attempt + 1}: 成功保存 {saved_count} 张图片。生成完成。")
-                    return True
-                else:
-                    print(f"[DreaminaOperator] 尝试 {current_attempt + 1} 失败: 图片保存数量不足 ({saved_count}/{MIN_EXPECTED_IMAGES})。")
+                    print(f"[DreaminaOperator] ✅ 积分充足，开始生成")
             else:
-                print(f"[DreaminaOperator] 尝试 {current_attempt + 1} 失败: 未能最终确认图片加载 (块 ID: {target_block_id if identified_new_block else 'N/A'})。")
-
-        except PlaywrightTimeoutError as pte:
-            print(f"[DreaminaOperator] 尝试 {current_attempt + 1} 中发生 Playwright 超时: {pte}")
-        except PlaywrightError as pe:
-            print(f"[DreaminaOperator] 尝试 {current_attempt + 1} 中发生 Playwright 错误: {pe}")
+                print(f"[DreaminaOperator] ⚠️ 无法获取积分信息，继续尝试生成")
+                initial_points = None
+                
         except Exception as e:
-            print(f"[DreaminaOperator] 尝试 {current_attempt + 1} 中发生一般错误: {e} (行号: {e.__traceback__.tb_lineno if e.__traceback__ else 'N/A'})")
+            print(f"[DreaminaOperator] ❌ 生成前积分检测失败: {e}")
+            initial_points = None
+        
+        # 输入提示词
+        prompt_input_xpath = get_element("image_generation", "prompt_input")
+        prompt_input = page.locator(prompt_input_xpath)
+        prompt_input.wait_for(state="visible", timeout=30000) 
+        prompt_input.click() 
+        prompt_input.fill("") 
+        prompt_input.fill(current_prompt_text)
+        print("[DreaminaOperator] 提示词已输入.")
+        
+        # 智能延时：模拟人类思考时间
+        smart_delay("输入提示词")
+        
+        # 选择图片尺寸
+        try:
+            import json
+            with open('user_config.json', 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            default_aspect_ratio = config.get("image_settings", {}).get("default_aspect_ratio", "9:16")
+            
+            select_aspect_ratio(page, default_aspect_ratio)
+            
+        except Exception as e:
+            print(f"[DreaminaOperator] ❌ 选择图片尺寸失败: {e}，继续生成流程")
 
-        if current_attempt < MAX_RETRY_ATTEMPTS:
-            print(f"[DreaminaOperator] 等待10秒后将进行下一次尝试...")
-            time.sleep(10)
-            current_attempt += 1
+        # 生成前准备
+        smart_delay("点击生成按钮前准备")
+
+        # 点击生成按钮（简化版）
+        print("[DreaminaOperator] 等待 2 秒后点击生成按钮...")
+        time.sleep(2)
+        generate_button_selector = get_element("image_generation", "generate_button")
+        generate_button = page.locator(generate_button_selector)
+        generate_button.wait_for(state="visible", timeout=30000)
+        generate_button.click(timeout=30000)
+        print("[DreaminaOperator] '生成' 按钮已点击.")
+        print("[DreaminaOperator] 点击生成后，等待2秒以便结果块初步加载...")
+        time.sleep(2)
+
+        # === 检测排队状态并等待消失 ===
+        queueing_xpath = get_element("image_generation", "queueing_status")
+        
+        print("[DreaminaOperator] 🔍 检测是否有排队状态...")
+        
+        try:
+            page.wait_for_selector(f"xpath={queueing_xpath}", timeout=10000)
+            print("[DreaminaOperator] ⏳ 检测到排队状态，开始等待...")
+            
+            QUEUE_WAIT_TIMEOUT = get_wait_time("queue_timeout")
+            queue_start_time = time.time()
+
+            while time.time() - queue_start_time < QUEUE_WAIT_TIMEOUT:
+                queueing_count = page.locator(f"xpath={queueing_xpath}").count()
+                
+                if queueing_count == 0:
+                    print("[DreaminaOperator] ✅ 排队状态已消失")
+                    break
+                
+                time.sleep(3)
+            else:
+                print(f"[DreaminaOperator] ⚠️ 排队等待超时，继续检测生成状态")
+                
+        except PlaywrightTimeoutError:
+            print("[DreaminaOperator] ✅ 未检测到排队状态")
+        except Exception as e:
+            print(f"[DreaminaOperator] ⚠️ 检测排队状态时出错: {e}")
+
+        smart_delay("排队检测完成")
+
+        # === 检测生成中状态并等待内容出现后滚动 ===
+        generating_xpath = get_element("image_generation", "generating_status")
+
+        print("[DreaminaOperator] 🔍 开始检测生成中状态...")
+        
+        try:
+            page.wait_for_selector(f"xpath={generating_xpath}", timeout=60000)
+            print("[DreaminaOperator] ✅ 检测到生成中状态（4张loading图片）")
+            
+            # 关键优化：等待生成内容真正出现后再滚动
+            print("[DreaminaOperator] 🔄 等待生成内容出现后执行智能滚动...")
+            wait_for_content_and_scroll(page, generating_xpath, max_wait_seconds=10)
+                
+        except PlaywrightTimeoutError:
+            print("[DreaminaOperator] ⚠️ 未检测到生成中状态，执行备用滚动")
+            simple_scroll_down(page, "备用滚动")
+        
+        # 等待生成中状态完全消失
+        MAX_GENERATION_WAIT_SECONDS = get_wait_time("generation_timeout")
+        POLL_INTERVAL_SECONDS = get_wait_time("poll_interval")
+        
+        print(f"[DreaminaOperator] ⏳ 等待生成完成（最多{MAX_GENERATION_WAIT_SECONDS//60}分钟）...")
+        
+        generation_start_time = time.time()
+        
+        while time.time() - generation_start_time < MAX_GENERATION_WAIT_SECONDS:
+            generating_count = page.locator(f"xpath={generating_xpath}").count()
+            
+            if generating_count == 0:
+                print("[DreaminaOperator] ✅ 生成中状态已完全消失！")
+                break
+            
+            print(f"[DreaminaOperator] 🔄 仍在生成中，继续等待...")
+            time.sleep(POLL_INTERVAL_SECONDS)
         else:
-            print(f"[DreaminaOperator] 所有尝试 ({MAX_RETRY_ATTEMPTS + 1}) 均失败。放弃为提示词 (Row {excel_row_num}) '{current_prompt_text}' 生成。")
-            return False
+            print(f"[DreaminaOperator] ⏰ 生成超时，尝试检测部分完成的图片")
+        
+        smart_delay("生成状态检测完成")
+        
+        # === 检测完成状态容器 ===
+        completed_xpath = get_element("image_generation", "completed_container")
+        
+        print("[DreaminaOperator] 🔍 开始检测完成状态容器...")
+        
+        # 最终确保页面位置正确
+        try:
+            print("[DreaminaOperator] 🎯 最终定位：确保页面滚动到结果区域...")
+            simple_scroll_down(page, "最终定位滚动")
+        except Exception as scroll_error:
+            print(f"[DreaminaOperator] 最终滚动时出现问题: {scroll_error}")
+        
+        try:
+            page.wait_for_selector(f"xpath={completed_xpath}", timeout=30000)
+            completed_container = page.locator(f"xpath={completed_xpath}")
+            
+            if completed_container.count() > 0:
+                print("[DreaminaOperator] ✅ 找到完成状态容器")
+                
+                # 等待容器内的图片加载完成
+                image_selector = get_element("image_generation", "generated_images")
+                
+                print("[DreaminaOperator] 🖼️ 等待图片加载完成...")
+                MAX_IMAGE_LOAD_WAIT = get_wait_time("image_load_timeout")
+                image_load_start = time.time()
+                final_image_elements = []
+                
+                while time.time() - image_load_start < MAX_IMAGE_LOAD_WAIT:
+                    images = completed_container.locator(image_selector).all()
+                    loaded_images = []
 
-    return False
+                    for img in images:
+                        try:
+                            if safe_is_visible(img, timeout=2000):
+                                src = img.get_attribute("src")
+                                if src and src.startswith("https://") and "tplv-" in src:
+                                    loaded_images.append(img)
+                        except:
+                            continue
 
-# 原来的 if __name__ == '__main__': 块被移除或注释掉
-# if __name__ == '__main__':
-#     parser = argparse.ArgumentParser(description="控制已打开的浏览器标签页，打开 Dreamina 并关闭其他标签页。")
-#     parser.add_argument("cdp_endpoint", help="Playwright 连接所需的 CDP Endpoint (例如: http://127.0.0.1:xxxxx)")
-#     args = parser.parse_args()
-# 
-#     dreamina_url = "https://dreamina.capcut.com/ai-tool/image/generate"
-#     
-#     if not args.cdp_endpoint.startswith("http://") and not args.cdp_endpoint.startswith("https://"):
-#         actual_cdp_endpoint = f"http://{args.cdp_endpoint}"
-#         print(f"CDP Endpoint 未包含 http:// 或 https://, 自动添加 http:// 前缀: {actual_cdp_endpoint}")
-#     else:
-#         actual_cdp_endpoint = args.cdp_endpoint
-# 
-#     control_dreamina_tabs(cdp_endpoint=actual_cdp_endpoint, target_url=dreamina_url) 
+                    loaded_count = len(loaded_images)
+                    print(f"[DreaminaOperator] 图片加载进度: {loaded_count}/4")
+                    
+                    if loaded_count >= 4:
+                        print("[DreaminaOperator] ✅ 所有4张图片加载完成")
+                        final_image_elements = loaded_images
+                        break
+                    elif loaded_count >= 1:
+                        print(f"[DreaminaOperator] 已加载{loaded_count}张图片，继续等待...")
+                        time.sleep(5)
+                    else: 
+                        time.sleep(3)
+                
+                if not final_image_elements:
+                    print("[DreaminaOperator] ⚠️ 图片加载超时，尝试使用已加载的图片")
+                    if loaded_count >= 1:
+                        final_image_elements = loaded_images
+                    else:
+                        print("[DreaminaOperator] ❌ 未加载到任何图片")
+                        return []
+            else:
+                print("[DreaminaOperator] ❌ 完成状态容器不可见")
+                return []
+        except PlaywrightTimeoutError:
+            print("[DreaminaOperator] ❌ 未找到完成状态容器")
+            return []
+        except Exception as e:
+            print(f"[DreaminaOperator] ❌ 检测完成状态时出错: {e}")
+            return []
+        
+        # 如果成功获得图片元素，直接进行保存
+        if not final_image_elements:
+            print("[DreaminaOperator] ❌ 未获得任何图片元素")
+            return []
+        
+        print(f"[DreaminaOperator] ✅ 成功获得 {len(final_image_elements)} 张图片，开始保存...")
+        
+        smart_delay("准备保存图片")
+        
+        # 直接进入保存流程
+        saved_count = 0
+        save_errors = []
+        total_images = len(final_image_elements)
+        
+        for i, img_element in enumerate(final_image_elements):
+            try:
+                print(f"[DreaminaOperator] 正在保存第 {i+1}/{total_images} 张图片...")
+                
+                image_src = img_element.get_attribute("src") 
+                if not image_src: 
+                    error_msg = f"第 {i+1} 张图片的 src 意外为空"
+                    print(f"[DreaminaOperator] 警告: (Row {excel_row_num}) {error_msg}，跳过。")
+                    save_errors.append(error_msg)
+                    continue
+                
+                # 计算数据行号
+                import json
+                with open('user_config.json', 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                start_row = config.get("excel_settings", {}).get("start_row", 2)
+                data_row_num = excel_row_num - start_row + 1
+            
+                filename_prompt_part = "default"
+                image_filename = f"{data_row_num}_{filename_prompt_part}_img{i+1}.jpg"
+                full_save_path = os.path.join(current_image_save_path, image_filename) 
+
+                # 确保目录存在
+                os.makedirs(os.path.dirname(full_save_path), exist_ok=True)
+                
+                save_success = False
+
+                if image_src.startswith('data:image'):
+                    print(f"[DreaminaOperator] 检测到 base64 图片数据，正在解码并转换为JPG...")
+                    try:
+                        header, encoded = image_src.split(',', 1)
+                        image_data = base64.b64decode(encoded)
+                        
+                        if PIL_AVAILABLE:
+                            img = Image.open(io.BytesIO(image_data))
+                            
+                            if img.mode in ('RGBA', 'LA'):
+                                background = Image.new('RGB', img.size, (255, 255, 255))
+                                if img.mode == 'RGBA':
+                                    background.paste(img, mask=img.split()[-1])
+                                else:
+                                    background.paste(img)
+                                img = background
+                            elif img.mode != 'RGB':
+                                img = img.convert('RGB')
+                            
+                            img.save(full_save_path, 'JPEG', quality=95, optimize=True)
+                        else:
+                            with open(full_save_path, 'wb') as f:
+                                f.write(image_data)
+                        
+                        save_success = True
+                        print(f"[DreaminaOperator] ✅ 第 {i+1} 张图片保存成功: {image_filename}")
+                    except Exception as e:
+                        error_msg = f"解码/保存 base64 图片为JPG失败: {e}"
+                        print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
+                        save_errors.append(error_msg)
+                        
+                elif image_src.startswith('http'):
+                    print(f"[DreaminaOperator] 检测到图片 URL，正在下载并转换为JPG...")
+                    try:
+                        img_response = requests.get(image_src, timeout=60)
+                        img_response.raise_for_status()
+                        
+                        if PIL_AVAILABLE:
+                            img = Image.open(io.BytesIO(img_response.content))
+                            
+                            if img.mode in ('RGBA', 'LA'):
+                                background = Image.new('RGB', img.size, (255, 255, 255))
+                                if img.mode == 'RGBA':
+                                    background.paste(img, mask=img.split()[-1])
+                                else:
+                                    background.paste(img)
+                                img = background
+                            elif img.mode != 'RGB':
+                                img = img.convert('RGB')
+                            
+                            img.save(full_save_path, 'JPEG', quality=95, optimize=True)
+                        else:
+                            with open(full_save_path, 'wb') as f:
+                                f.write(img_response.content)
+                        
+                        save_success = True
+                        print(f"[DreaminaOperator] ✅ 第 {i+1} 张图片下载并转换为JPG成功: {image_filename}")
+                    except requests.RequestException as e:
+                        error_msg = f"下载图片 URL 失败: {e}"
+                        print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
+                        save_errors.append(error_msg)
+                elif image_src.startswith('blob:'):
+                    print(f"[DreaminaOperator] 检测到 blob URL，尝试截图并转换为JPG...")
+                    try:
+                        if PIL_AVAILABLE:
+                            temp_png_path = full_save_path.replace('.jpg', '_temp.png')
+                            img_element.screenshot(path=temp_png_path)
+                            
+                            img = Image.open(temp_png_path)
+                            
+                            if img.mode in ('RGBA', 'LA'):
+                                background = Image.new('RGB', img.size, (255, 255, 255))
+                                if img.mode == 'RGBA':
+                                    background.paste(img, mask=img.split()[-1])
+                                else:
+                                    background.paste(img)
+                                img = background
+                            elif img.mode != 'RGB':
+                                img = img.convert('RGB')
+                            
+                            img.save(full_save_path, 'JPEG', quality=95, optimize=True)
+                            
+                            try:
+                                os.remove(temp_png_path)
+                            except:
+                                pass
+                        else:
+                            img_element.screenshot(path=full_save_path)
+                        
+                        save_success = True
+                        print(f"[DreaminaOperator] ✅ 第 {i+1} 张图片截图并转换为JPG成功: {image_filename}")
+                    except Exception as e_screenshot:
+                        error_msg = f"blob 图片元素截图转JPG失败: {e_screenshot}"
+                        print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
+                        save_errors.append(error_msg)
+                else:
+                    error_msg = f"未识别的图片源格式: {image_src[:60]}..."
+                    print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
+                    save_errors.append(error_msg)
+                    
+                if save_success:
+                    saved_count += 1
+                    # 验证文件确实保存成功
+                    if os.path.exists(full_save_path) and os.path.getsize(full_save_path) > 0:
+                        print(f"[DreaminaOperator] 📁 文件验证成功: {full_save_path} ({os.path.getsize(full_save_path)} bytes)")
+                    else:
+                        print(f"[DreaminaOperator] ⚠️ 文件验证失败: {full_save_path}")
+                        saved_count -= 1
+                        save_errors.append(f"文件验证失败: {image_filename}")
+                
+                # 在保存图片之间添加智能延时（最后一张图片除外）
+                if i < total_images - 1:
+                    smart_delay("图片保存间隔")
+                        
+            except Exception as e:
+                error_msg = f"保存第 {i+1} 张图片时发生意外错误: {e}"
+                print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
+                save_errors.append(error_msg)
+                continue
+        
+        # 保存完成后的详细报告
+        print(f"\n[DreaminaOperator] 📊 图片保存完成报告 (Row {excel_row_num}):")
+        print(f"  总计图片数: {total_images}")
+        print(f"  成功保存: {saved_count}")
+        print(f"  保存失败: {len(save_errors)}")
+        print(f"  成功率: {saved_count/total_images*100:.1f}%" if total_images > 0 else "  成功率: 0%")
+        
+        if save_errors:
+            print(f"  错误详情:")
+            for i, error in enumerate(save_errors[:3], 1):
+                print(f"    {i}. {error}")
+            if len(save_errors) > 3:
+                print(f"    ... 还有 {len(save_errors) - 3} 个错误")
+        
+        # 判断成功标准
+        min_success_threshold = max(1, min(2, total_images // 2))
+        is_success = saved_count >= min_success_threshold
+        
+        if is_success:
+            print(f"[DreaminaOperator] ✅ 图片保存任务被认为成功 (保存了 {saved_count}/{total_images} 张)")
+        else:
+            print(f"[DreaminaOperator] ❌ 图片保存任务失败 (仅保存了 {saved_count}/{total_images} 张)")
+            
+        # 检测并显示当前积分余额
+        print(f"\n[DreaminaOperator] 💰 生成后积分检测...")
+        try:
+            points_selector = get_element("points_monitoring", "primary_selector")
+            points_monitor = PointsMonitor(custom_points_selector=points_selector)
+            current_points = points_monitor.check_points(page, timeout=10000)
+            
+            if current_points is not None:
+                print(f"[DreaminaOperator] 💰 生成后积分余额: {current_points} 分")
+                
+                if initial_points is not None:
+                    points_consumed = initial_points - current_points
+                    if points_consumed > 0:
+                        print(f"[DreaminaOperator] 📉 本次消耗积分: {points_consumed} 分")
+                    elif points_consumed < 0:
+                        print(f"[DreaminaOperator] 📈 积分增加了: {abs(points_consumed)} 分")
+                    else:
+                        print(f"[DreaminaOperator] ➡️ 积分无变化")
+                
+                remaining_generations = points_monitor.estimate_remaining_generations(current_points, 2)
+                print(f"[DreaminaOperator] 📊 预计还可生成: {remaining_generations} 次")
+                
+                if current_points < 2:
+                    print(f"[DreaminaOperator] 🚨 积分不足，无法进行下次生成！")
+                elif current_points < 6:
+                    print(f"[DreaminaOperator] ⚠️ 积分余额较低，建议及时充值！")
+                else:
+                    print(f"[DreaminaOperator] ✅ 积分充足，可继续生成")
+            else:
+                print(f"[DreaminaOperator] ⚠️ 无法获取积分信息，请检查页面状态")
+                
+        except Exception as e:
+            print(f"[DreaminaOperator] ❌ 积分检测失败: {e}")
+        
+        smart_delay("任务完成")
+        
+        # 返回保存成功的图片信息列表
+        if is_success:
+            saved_images = []
+            import json
+            with open('user_config.json', 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            start_row = config.get("excel_settings", {}).get("start_row", 2)
+            data_row_num = excel_row_num - start_row + 1
+            
+            for i in range(saved_count):
+                filename_prompt_part = "default"
+                image_filename = f"{data_row_num}_{filename_prompt_part}_img{i+1}.jpg"
+                full_save_path = os.path.join(current_image_save_path, image_filename)
+                if os.path.exists(full_save_path):
+                    saved_images.append({
+                        'filename': image_filename,
+                        'path': full_save_path,
+                        'size': os.path.getsize(full_save_path)
+                    })
+            return saved_images
+        else:
+            return []
+            
+    except PlaywrightTimeoutError as pte:
+        print(f"[DreaminaOperator] 在为提示词 (Row {excel_row_num}) '{current_prompt_text}' 生成图片过程中发生 Playwright 超时: {pte}")
+        return []
+    except PlaywrightError as pe:
+        print(f"[DreaminaOperator] 在为提示词 (Row {excel_row_num}) '{current_prompt_text}' 生成图片过程中发生 Playwright 错误: {pe}")
+        return []
+    except Exception as e:
+        print(f"[DreaminaOperator] 在为提示词 (Row {excel_row_num}) '{current_prompt_text}' 生成图片过程中发生一般错误: {e}")
+        return [] 

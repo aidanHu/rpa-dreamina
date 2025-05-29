@@ -1,125 +1,319 @@
-# Dreamina 图像生成自动化脚本
+# 🎨 Dreamina 自动化工具
 
-本项目是一个 Python 自动化脚本，旨在使用 Bit Browser 和 Playwright 控制 Dreamina 网页 (`https://dreamina.capcut.com/ai-tool/image/generate`) 进行批量图片生成。脚本能够从 Excel 文件中读取提示词，自动输入到网页，等待图片生成完毕，并将生成的图片保存到本地。
+一个功能强大的 Dreamina 图片生成自动化工具，支持批量处理、多窗口并行、账号管理等功能。
 
-## 功能特性
+## ✨ 主要功能
 
-*   通过 Bit Browser API 控制指定的浏览器窗口。
-*   使用 Playwright 自动化网页操作。
-*   从指定文件夹内的多个 Excel 文件中读取图片生成提示词。
-*   为每个提示词自动在 Dreamina 页面上执行图片生成操作。
-*   智能等待图片生成完成，并保存与当前提示词对应的最新图片。
-*   支持多浏览器窗口并行处理不同的 Excel 文件（或提示词）。
-*   保存的图片文件名包含原始提示词、来源 Excel 文件名、行号和时间戳，方便追溯。
+- 🖼️ **批量图片生成** - 从Excel文件读取提示词，自动生成图片
+- 📏 **图片尺寸选择** - 支持多种尺寸比例（9:16, 1:1, 16:9等），可配置默认尺寸
+- 🚀 **智能多窗口** - 根据配置的浏览器ID数量自动选择单窗口或多窗口模式
+- 📝 **账号管理** - 自动注册和注销Dreamina账号
+- 🔄 **智能断点续传** - 自动跳过已处理的提示词
+- 📁 **项目独立管理** - 每个项目的文件独立存储
+- ⚙️ **灵活配置** - 可自定义状态列、保存路径等
 
-## 环境要求
+## 📁 文件结构
 
-*   Python 3.7+
-*   Bit Browser 客户端已安装并正在运行。
-*   Bit Browser API 服务已开启（通常在 Bit Browser 设置中可以找到）。
-*   操作系统：Windows, macOS, 或 Linux。
+### 推荐的项目组织方式
+```
+Projects/
+├── 项目A_风景/
+│   ├── 项目A_风景_提示词.xlsx
+│   ├── 1_美丽的山水风景_img1.jpg
+│   └── 1_美丽的山水风景_img2.jpg
+├── 项目B_动物/
+│   ├── 项目B_动物_提示词.xlsx
+│   ├── 1_可爱的小猫咪_img1.jpg
+│   └── 2_奔跑的马匹_img1.jpg
+└── 项目C_建筑/
+    ├── 项目C_建筑_提示词.xlsx
+    └── (生成的图片)
+```
 
-## 安装与配置
+### Excel文件格式
+- **第1行**: 标题行（会被跳过）
+- **第1列**: 可选的其他信息
+- **第2列**: 提示词文本（可配置）
+- **第3列**: 状态标记（可配置）
+- **从第2行开始**: 实际数据（可配置）
 
-1.  **获取项目文件**:
-    *   如果您是通过版本控制系统（如 Git）获取的，请克隆仓库。
-    *   如果直接获得文件，请确保所有脚本文件 (`main_controller.py`, `bit_api.py`, `dreamina_operator.py`, `excel_reader.py`) 和配置文件 (`browser_config.json`, `requirements.txt`) 都在同一个项目根目录下。
+### 文件命名规则
+**格式**: `{数据行号}_{清理后的提示词}_img{序号}.jpg`
 
-2.  **创建并激活虚拟环境** (推荐):
-    ```bash
-    python -m venv venv
-    # Windows
-    .\venv\Scripts\activate
-    # macOS/Linux
-    source venv/bin/activate
-    ```
+**命名逻辑**:
+- Excel第1行：标题行（跳过）
+- Excel第2行：数据第1行 → 文件名以 `1_` 开头
+- Excel第3行：数据第2行 → 文件名以 `2_` 开头
+- 以此类推...
 
-3.  **安装依赖**:
-    在项目根目录下，运行以下命令安装所需的 Python 包：
-    ```bash
-    pip install -r requirements.txt
-    ```
-    这将安装 `playwright`, `requests`, 和 `openpyxl` 等必要的库。
-    Playwright 在首次安装时可能会下载浏览器驱动，请耐心等待。如果下载速度慢或失败，可能需要配置网络代理或手动安装 (参考 Playwright 官方文档: `playwright install`)。
+**示例**:
+- `1_美丽的山水风景_img1.jpg` （来自Excel第2行的第1张图）
+- `1_美丽的山水风景_img2.jpg` （来自Excel第2行的第2张图）
+- `2_夕阳下的湖泊_img1.jpg` （来自Excel第3行的第1张图）
 
-4.  **配置 Bit Browser 窗口 (`browser_config.json`)**:
-    *   在项目根目录下，创建或修改 `browser_config.json` 文件。
-    *   此文件用于指定脚本将要控制的 Bit Browser 窗口。
-    *   格式为一个 JSON 数组，每个对象代表一个浏览器配置：
-        ```json
-        [
-          {
-            "id": "需要控制的第一个Bit Browser窗口ID",
-            "name": "浏览器A" // 可选，用于日志输出，便于区分
-          },
-          {
-            "id": "需要控制的第二个Bit Browser窗口ID",
-            "name": "浏览器B"
-          }
-          // 可以添加更多浏览器配置
-        ]
-        ```
-    *   `id`: **必需**，Bit Browser 中浏览器窗口的唯一ID。
-    *   `name`: 可选，为浏览器指定一个易于识别的名称，会显示在日志中。
-    *   确保填写的浏览器窗口 ID 在您的 Bit Browser 中是真实存在的。脚本运行时，这些浏览器窗口应该是关闭状态，脚本会自动尝试打开它们。
+### 智能延时配置
+程序使用智能延时来模拟人类操作节奏，避免被检测为机器行为：
 
-5.  **准备提示词 Excel 文件**:
-    *   在项目根目录下创建一个名为 `excel_prompts` 的文件夹。
-    *   将包含提示词的 Excel 文件（`.xlsx` 或 `.xls` 格式）放入此文件夹中。
-    *   脚本会读取该文件夹下所有 Excel 文件的**第一个工作表 (Sheet)** 的**第一列 (Column A)** 作为提示词来源。
-    *   每个单元格包含一个提示词。表头（如果有）也会被视为提示词，除非您在 `excel_reader.py` 中修改逻辑来跳过。
-    *   确保 Excel 文件没有密码保护。
+- **延时范围**: 可在配置文件中设置最小值和最大值
+- **随机性**: 每次延时时间在设置范围内随机生成
+- **自适应**: 系统会根据不同操作场景自动应用合适的延时
+- **可配置**: 用户可根据网络状况和偏好调整延时范围
 
-6.  **创建图片保存目录**:
-    *   脚本会自动在项目根目录下创建一个名为 `generated_images` 的文件夹，用于存放生成的图片。如果此文件夹已存在，则直接使用。
+**建议配置**:
+- 网络较快: `min: 1, max: 3`
+- 网络一般: `min: 2, max: 5`（默认）
+- 网络较慢: `min: 3, max: 8`
 
-## 如何运行
+## ⚙️ 配置文件
 
-1.  **确保 Bit Browser 客户端正在运行**，并且其 API 服务已开启。
-2.  **确保 `browser_config.json` 中配置的浏览器窗口在 Bit Browser 中是关闭状态**。脚本会尝试通过 API 打开它们。
-3.  打开终端或命令提示符，导航到项目根目录。
-4.  如果使用了虚拟环境，请确保已激活。
-5.  运行主控制脚本：
-    ```bash
-    python main_controller.py
-    ```
-6.  脚本将开始执行：
-    *   加载浏览器配置。
-    *   扫描 `excel_prompts` 文件夹中的 Excel 文件。
-    *   为每个配置的浏览器分配 Excel 文件任务。
-    *   并行启动并控制每个浏览器窗口：
-        *   打开 Dreamina 网页。
-        *   依次处理分配到的 Excel 文件中的每个提示词。
-        *   生成图片并保存到 `generated_images` 文件夹。
-    *   日志信息会输出到控制台，显示当前操作进度、成功与失败信息。
+### 主配置文件
 
-## 输出说明
+编辑 `user_config.json` 进行基本配置：
 
-*   生成的图片将保存在项目根目录下的 `generated_images` 文件夹中。
-*   每张图片（通常 Dreamina 一次会生成多张，脚本会尝试保存所有检测到的新图片）的文件名格式如下：
-    `[提示词前30字符]_[来源Excel文件名]_[行号]_[时间戳YYYYMMDDHHMMSS]_[图片序号].png`
-    例如：`A_beautiful_cat_sitting_on_a_sofa_prompts_v1_3_20231027153000_1.png`
-    *   提示词部分会被截断并替换特殊字符，以确保文件名有效。
-    *   图片序号用于区分同一提示词生成的不同图片。
+```json
+{
+  "browser_settings": {
+    "browser_ids": [
+      "your_browser_id_here"
+    ]
+  },
+  "file_paths": {
+    "root_directory": "/path/to/your/Projects"
+  },
+  "excel_settings": {
+    "prompt_column": 2,
+    "status_column": 3,
+    "status_text": "已生成图片",
+    "start_row": 2
+  },
+  "image_settings": {
+    "default_aspect_ratio": "9:16"
+  },
+  "multi_window_settings": {
+    "task_interval_seconds": 3,
+    "startup_delay_seconds": 5,
+    "error_retry_attempts": 2
+  },
+  "points_monitoring": {
+    "enabled": true,
+    "min_points_threshold": 4,
+    "check_interval_seconds": 30
+  },
+  "smart_delays": {
+    "min": 2,
+    "max": 5,
+    "description": "统一智能延时范围（秒）"
+  }
+}
+```
 
-## 项目文件结构
+### 多窗口专用配置文件
 
-*   `main_controller.py`: 主执行脚本，负责整体流程控制、任务分配和多浏览器并行处理。
-*   `bit_api.py`: 封装与 Bit Browser 本地 API 交互的函数，如打开和关闭浏览器窗口。
-*   `dreamina_operator.py`: 使用 Playwright 控制 Dreamina 网页操作的模块，包括导航、输入提示词、点击生成按钮、等待图片加载和保存图片。
-*   `excel_reader.py`: 负责从 Excel 文件中读取提示词。
-*   `requirements.txt`: 项目的 Python 依赖库列表。
-*   `browser_config.json`: Bit Browser 窗口配置文件。
-*   `README.md`: 本说明文件。
-*   `excel_prompts/`: (需用户创建) 存放包含提示词的 Excel 文件的文件夹。
-*   `generated_images/`: (脚本自动创建) 保存生成的图片的文件夹。
-*   `venv/`: (推荐创建) Python 虚拟环境文件夹。
+编辑 `multi_window_config.json` 进行多窗口优化配置：
 
-## 注意事项与故障排查
+```json
+{
+  "multi_window_settings": {
+    "max_concurrent_windows": 3,
+    "task_interval_seconds": 5,
+    "startup_delay_seconds": 8,
+    "error_retry_attempts": 3,
+    "thread_timeout_seconds": 300,
+    "window_restart_delay_seconds": 10
+  },
+  "thread_safety": {
+    "enable_independent_playwright": true,
+    "enable_thread_isolation": true,
+    "max_thread_wait_time": 30
+  },
+  "error_handling": {
+    "max_consecutive_errors": 5,
+    "error_cooldown_seconds": 30,
+    "auto_restart_on_error": true
+  }
+}
+```
 
-*   **Bit Browser API**: 确保 Bit Browser 的 API 地址和端口（通常默认为 `127.0.0.1:54345`）可以被脚本访问。如果 Bit Browser 修改了 API 端口，您可能需要相应地修改 `bit_api.py` 中的 `BASE_URL`。
-*   **网络问题**: 图片生成和下载依赖网络连接。如果网络不稳定，可能会导致超时或失败。
-*   **Dreamina 页面结构变化**: 如果 Dreamina 网站的页面结构（HTML元素、CSS选择器）发生较大变化，`dreamina_operator.py` 中的元素定位逻辑可能需要更新。
-*   **图片加载判断**: 当前图片加载完成的判断逻辑依赖于观察新图片元素的出现及其 `src` 属性的更新。在某些情况下，如果页面行为有细微变化，可能需要调整等待条件和超时设置。
-*   **权限问题**: 确保脚本对 `excel_prompts` 文件夹有读取权限，对项目根目录有创建 `generated_images` 文件夹和写入文件的权限。
-*   **Playwright Timeout**: 如果遇到 Playwright 操作超时 (`PlaywrightTimeoutError`)，可以尝试在 `dreamina_operator.py` 或 `main_controller.py` 中涉及 Playwright 调用的地方适当增加超时时间（例如 `page.wait_for_selector` 或 `browser.connect_over_cdp` 的 `timeout` 参数）。 
+### 配置说明
+
+| 配置项 | 说明 |
+|--------|------|
+| `root_directory` | 项目根目录路径 |
+| `prompt_column` | Excel中提示词的列号（1基，默认第2列） |
+| `status_column` | Excel中状态标记的列号（1基，默认第3列） |
+| `status_text` | 状态标记文本 |
+| `start_row` | 开始处理的行号（1基，默认第2行，跳过标题行） |
+| `default_aspect_ratio` | 默认图片尺寸比例（如9:16, 1:1, 16:9等） |
+| `browser_ids` | Bit Browser的浏览器ID列表（多个ID启用多窗口） |
+| `min_points_threshold` | 最低积分阈值 |
+| `smart_delays.min` | 智能延时最小值（秒） |
+| `smart_delays.max` | 智能延时最大值（秒） |
+
+#### 多窗口配置说明
+
+| 配置项 | 说明 |
+|--------|------|
+| `max_concurrent_windows` | 最大并发窗口数 |
+| `task_interval_seconds` | 任务间隔时间（秒） |
+| `startup_delay_seconds` | 窗口启动延时（秒） |
+| `max_consecutive_errors` | 最大连续错误次数 |
+| `error_cooldown_seconds` | 错误冷却时间（秒） |
+| `window_restart_delay_seconds` | 窗口重启延时（秒） |
+| `enable_independent_playwright` | 启用独立Playwright实例 |
+| `enable_thread_isolation` | 启用线程隔离 |
+
+## 🚀 使用方法
+
+### 1. 环境准备
+
+```bash
+# 安装依赖
+pip install -r requirements.txt
+
+# 确保Bit Browser已安装并配置
+```
+
+### 2. 配置设置
+
+1. 修改 `user_config.json` 中的 `root_directory` 为您的项目根目录
+2. 配置浏览器ID（从Bit Browser获取）
+3. 根据需要调整其他设置
+
+### 3. 准备项目文件
+
+1. 在根目录下创建项目子文件夹
+2. 在每个子文件夹中放置Excel文件
+3. Excel第二列填写提示词（可在配置中修改列号）
+
+### 4. 运行程序
+
+```bash
+python main.py
+```
+
+选择相应功能：
+- `1` - 账号注册功能
+- `2` - 账号注销功能  
+- `3` - 批量图片生成（智能选择单窗口或多窗口）
+
+### 5. 验证多窗口修复（可选）
+
+如果之前遇到过多窗口线程错误，可以运行测试验证修复效果：
+
+```bash
+python test_multi_window_fix.py
+```
+
+测试将验证：
+- ✅ 配置文件正确加载
+- ✅ 窗口独立Playwright实例
+- ✅ 线程安全性
+
+## 🎯 功能特点
+
+### 📊 智能处理
+- **断点续传**: 自动检测已生成的图片，跳过已处理项目
+- **状态追踪**: 在Excel中标记处理状态
+- **错误重试**: 自动重试失败的任务
+- **智能延时**: 可配置的随机延时模拟人类操作节奏
+- **简单滚动**: 在页面右边进行向下滚动，简单有效
+
+### 🚀 高效并行
+- **多窗口支持**: 同时运行多个浏览器实例
+- **智能分配**: 自动分配任务到空闲窗口
+- **积分监控**: 实时监控账号积分余额
+
+### 📁 项目管理
+- **独立存储**: 每个项目的图片独立保存
+- **便于分发**: 项目文件夹可直接打包分享
+- **灵活组织**: 支持任意的项目文件夹结构
+
+## 🔧 故障排除
+
+### 常见问题
+
+1. **找不到Excel文件**
+   - 检查根目录路径是否正确
+   - 确保子文件夹中包含Excel文件
+
+2. **图片保存失败**
+   - 检查文件夹写入权限
+   - 确保磁盘空间充足
+
+3. **浏览器连接失败**
+   - 确认Bit Browser正在运行
+   - 检查浏览器ID是否正确
+
+4. **积分不足**
+   - 检查账号积分余额
+   - 程序会自动暂停积分不足的窗口
+
+5. **多窗口线程错误** ✅ **已修复**
+   - ~~问题：`greenlet.error: Cannot switch to a different thread`~~
+   - ✅ **解决方案**：每个窗口使用独立的Playwright实例
+   - 运行 `python test_multi_window_fix.py` 验证修复效果
+
+6. **页面滚动问题**
+   - 程序会在页面右边进行简单滚动
+   - 等待生成内容出现后再滚动
+   - 避免复杂的滚动逻辑导致定位错误
+
+### 配置验证
+
+程序启动时会自动验证：
+- ✅ 根目录是否存在
+- ✅ 子文件夹和Excel文件统计
+- ✅ 配置文件格式检查
+
+## 📋 依赖要求
+
+- Python 3.8+
+- Playwright
+- Pandas
+- Requests
+- PIL/Pillow
+- Bit Browser
+
+## 🔄 更新日志
+
+### v2.2 - 多窗口线程安全修复版本
+- 🔧 **重大修复**: 解决多窗口模式下的Playwright线程切换错误
+- ✨ 为每个窗口创建独立的Playwright实例，确保线程安全
+- ✨ 新增专门的多窗口配置文件 `multi_window_config.json`
+- ✨ 改进的错误处理机制：连续错误限制、错误冷却、智能重启
+- ✨ 增强的资源管理：线程内初始化和清理
+- ✨ 新增多窗口修复验证测试脚本
+- 📊 详细的窗口状态监控和统计报告
+
+### v2.1 - 滚动优化版本
+- ✨ 新增简单有效的滚动功能
+- ✨ 在页面右边进行向下滚动
+- ✨ 等待内容出现后再滚动
+- ✨ 智能延时系统统一配置
+- 🔧 修复所有语法错误和缩进问题
+- 🐛 避免复杂滚动逻辑导致的定位问题
+
+### v2.0 - 项目独立管理
+- ✨ 新增子文件夹结构支持
+- ✨ 图片保存到Excel所在文件夹
+- ✨ 可配置状态列和标记文本
+- 🔧 移除不必要的输出文件夹配置
+- 🐛 修复Playwright版本兼容性问题
+
+### v1.0 - 基础功能
+- ✨ 基础图片生成功能
+- ✨ 账号注册和管理
+- ✨ 多窗口并行处理
+- ✨ 积分监控
+
+## 📞 技术支持
+
+如遇到问题，请检查：
+1. 配置文件格式是否正确
+2. 文件路径是否存在
+3. 权限设置是否正确
+4. 控制台错误信息
+
+## 📄 许可证
+
+本项目仅供学习和研究使用。 
