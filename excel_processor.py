@@ -143,54 +143,45 @@ def mark_prompt_as_processed(excel_file_path, row_number, status_column=3, statu
     except Exception as e:
         print(f"[ExcelProcessor] 标记Excel文件时出错: {e}")
 
-def get_unprocessed_prompts_from_subfolders(root_directory):
+def get_unprocessed_prompts(root_directory):
     """
-    从根目录下的所有子文件夹中读取未处理的提示词
+    从Excel文件中获取未处理的提示词列表
     
     Args:
-        root_directory: 根目录路径
+        root_directory: Excel文件所在的根目录
         
     Returns:
-        list: 未处理提示词列表，每个元素包含提示词、文件信息等
+        list: 未处理的提示词信息列表
     """
+    unprocessed_prompts = []
+    seen_prompts_globally = set()  # 用于全局去重
+    
+    # 获取Excel设置
     excel_settings = get_excel_settings()
     prompt_column = excel_settings["prompt_column"]
     status_column = excel_settings["status_column"]
     status_text = excel_settings["status_text"]
     start_row = excel_settings["start_row"]
     
+    # 获取所有子文件夹中的Excel文件
     excel_files = find_excel_files_in_subfolders(root_directory)
     
-    if not excel_files:
-        print(f"[ExcelProcessor] 在根目录 '{root_directory}' 的子文件夹中未找到任何Excel文件。")
-        return []
-    
-    unprocessed_prompts = []
-    seen_prompts_globally = set()  # 用于全局去重提示词文本
-    
-    print(f"[ExcelProcessor] 找到 {len(excel_files)} 个包含Excel文件的子文件夹")
-    
+    # 遍历每个Excel文件
     for excel_info in excel_files:
         file_path = excel_info['file_path']
         subfolder_name = excel_info['subfolder_name']
         subfolder_path = excel_info['subfolder_path']
         
         try:
-            df = pd.read_excel(file_path, header=None, dtype=str)
+            print(f"\n[ExcelProcessor] 处理文件: {os.path.basename(file_path)}")
             
-            if df.empty:
-                print(f"[ExcelProcessor] 文件 '{os.path.basename(file_path)}' 为空。")
-                continue
-
-            # 确保至少有足够的列
-            max_col = max(prompt_column, status_column, df.shape[1])
-            if df.shape[1] < max_col:
-                df = df.reindex(columns=range(max_col))
-
+            # 读取Excel文件
+            df = pd.read_excel(file_path, header=None)
+            
             file_unprocessed_count = 0
             file_already_processed_count = 0
             
-            # 遍历DataFrame的每一行（从指定行开始）
+            # 遍历每一行
             for index, row in df.iterrows():
                 excel_row_number = index + 1  # pandas的索引是0基，转换为1基行号
                 
@@ -210,7 +201,7 @@ def get_unprocessed_prompts_from_subfolders(root_directory):
                         continue
                     
                     # 检查Excel中的状态标记
-                    if pd.notna(status_cell) and str(status_cell).strip() == status_text:
+                    if pd.notna(status_cell) and str(status_cell).strip() in [status_text, "提示词有问题，需修改"]:
                         file_already_processed_count += 1
                         seen_prompts_globally.add(current_prompt_clean)
                         continue
@@ -257,14 +248,21 @@ def get_unprocessed_prompts_from_excel_folder(folder_path, image_save_path="gene
     """
     兼容性函数：如果传入的是旧的excel_folder_path，则作为根目录处理
     """
-    return get_unprocessed_prompts_from_subfolders(folder_path)
+    return get_unprocessed_prompts(folder_path)
+
+# 添加新的兼容性函数
+def get_unprocessed_prompts_from_subfolders(root_directory):
+    """
+    兼容性函数：从子文件夹中获取未处理的提示词
+    """
+    return get_unprocessed_prompts(root_directory)
 
 def get_prompts_from_excel_folder(folder_path):
     """
     兼容性函数：读取所有提示词（包括已处理的）
     保持与原有代码的兼容性
     """
-    return get_unprocessed_prompts_from_subfolders(folder_path)
+    return get_unprocessed_prompts(folder_path)
 
 # 测试代码
 if __name__ == '__main__':
@@ -290,7 +288,7 @@ if __name__ == '__main__':
         print(f"创建测试文件: {test_file}")
 
     print("\n测试新的子文件夹结构...")
-    unprocessed = get_unprocessed_prompts_from_subfolders(test_root)
+    unprocessed = get_unprocessed_prompts(test_root)
     
     if unprocessed:
         print(f"\n找到 {len(unprocessed)} 个未处理的提示词:")

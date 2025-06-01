@@ -47,7 +47,12 @@
       "queueing_status": "//div[contains(text(), 'Queueing up for generation...')]",
       "generating_status": "//div[contains(@class, 'successContentContainer') and count(.//img[contains(@src, 'loading-gyro-large')]) = 4]",
       "completed_container": "//div[@id and contains(@class, 'item-') and starts-with(@id, 'item_')][1]//div[contains(@class, 'successContentContainer-')]",
-      "generated_images": "img[src^='https://']"
+      "generated_images": "img[src^='https://']",
+      "prompt_error": "//div[@id and contains(@class, 'item-') and starts-with(@id, 'item_')][1]//div[contains(@class, 'tipsWithFeedback')]",
+      "model_selector": "//div[contains(@class, 'container-')][./div[contains(@class, 'selectContainer-')] and .//img and .//span[contains(@class, 'text-')]]",
+      "model_image_3_0": "//div[contains(@class, 'listItem-')][.//div[contains(@class, 'modelTitle') and contains(text(), 'Image 3.0')]]",
+      "model_image_2_1": "//div[contains(@class, 'listItem-')][.//div[contains(@class, 'modelTitle') and contains(text(), 'Image 2.1')]]",
+      "model_image_2_0_pro": "//div[contains(@class, 'listItem-')][.//div[contains(@class, 'modelTitle') and contains(text(), 'Image 2.0 Pro')]]"
     },
     "aspect_ratio_selection": {
       "21:9": "//div[contains(text(), '21:9')]/parent::div",

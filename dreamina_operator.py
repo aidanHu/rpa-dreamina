@@ -22,6 +22,7 @@ from element_config import get_element, get_wait_time
 from points_monitor import PointsMonitor
 from playwright_compat import safe_title, safe_is_visible
 from smart_delay import smart_delay
+from human_behavior import HumanBehavior
 
 # 尝试导入PIL用于图片格式转换
 try:
@@ -230,15 +231,17 @@ def select_aspect_ratio(page, aspect_ratio="9:16"):
         print(f"[DreaminaOperator] ❌ 选择图片尺寸失败: {e}")
         return False
 
-def generate_image_on_page(page, prompt_info):
+def generate_image_on_page(page, prompt_info, should_select_aspect_ratio=True):
     """
     输入提示词，选择尺寸，点击生成，等待图片加载完成，并保存所有生成的图片。
+    should_select_aspect_ratio: 是否选择图片尺寸（仅首次为True）
     """
     final_image_elements = []
 
     current_prompt_text = prompt_info['prompt']
     source_folder_name = prompt_info['source_excel_name']
     excel_row_num = prompt_info['row_number']
+    excel_file_path = prompt_info['excel_file_path']
 
     # 检查页面连接
     if not check_page_connection(page):
@@ -289,40 +292,75 @@ def generate_image_on_page(page, prompt_info):
         # 输入提示词
         prompt_input_xpath = get_element("image_generation", "prompt_input")
         prompt_input = page.locator(prompt_input_xpath)
-        prompt_input.wait_for(state="visible", timeout=30000) 
-        prompt_input.click() 
-        prompt_input.fill("") 
-        prompt_input.fill(current_prompt_text)
+        
+        # 使用人类行为模拟输入提示词
+        if not HumanBehavior.human_like_type(page, prompt_input, current_prompt_text):
+            print("[DreaminaOperator] ❌ 输入提示词失败")
+            return final_image_elements
+            
         print("[DreaminaOperator] 提示词已输入.")
         
-        # 智能延时：模拟人类思考时间
-        smart_delay("输入提示词")
+        # 随机等待
+        HumanBehavior.random_delay(1.5, 3.0)
         
-        # 选择图片尺寸
-        try:
-            import json
-            with open('user_config.json', 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            default_aspect_ratio = config.get("image_settings", {}).get("default_aspect_ratio", "9:16")
+        # 只在首次生成时选择图片尺寸和模型
+        if should_select_aspect_ratio:
+            try:
+                import json
+                with open('user_config.json', 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                default_aspect_ratio = config.get("image_settings", {}).get("default_aspect_ratio", "9:16")
+                select_aspect_ratio(page, default_aspect_ratio)
+            except Exception as e:
+                print(f"[DreaminaOperator] ❌ 选择图片尺寸失败: {e}，继续生成流程")
             
-            select_aspect_ratio(page, default_aspect_ratio)
-            
-        except Exception as e:
-            print(f"[DreaminaOperator] ❌ 选择图片尺寸失败: {e}，继续生成流程")
+            # ===== 模型选择逻辑（只在网页会话第一次执行） =====
+            if not hasattr(generate_image_on_page, "_model_selected") or not generate_image_on_page._model_selected:
+                try:
+                    print(f"[调试] 当前config['image_settings']: {config.get('image_settings')}")
+                    model_name = config.get("image_settings", {}).get("default_model", "Image 3.0")
+                    print(f"[调试] model_name: {model_name}")
+                    model_selector_xpath = get_element("image_generation", "model_selector")
+                    print(f"[调试] model_selector_xpath: {model_selector_xpath}")
+                    model_selector = page.locator(f"xpath={model_selector_xpath}")
+                    print(f"[调试] model_selector count: {model_selector.count()}")
+                    model_selector.wait_for(state="visible", timeout=10000)
+                    HumanBehavior.random_delay(0.5, 1.0)
+                    HumanBehavior.human_like_click(page, model_selector)
+                    HumanBehavior.random_delay(0.8, 1.2)
 
-        # 生成前准备
-        smart_delay("点击生成按钮前准备")
+                    if model_name == "Image 3.0":
+                        model_option_xpath = get_element("image_generation", "model_image_3_0")
+                    elif model_name == "Image 2.1":
+                        model_option_xpath = get_element("image_generation", "model_image_2_1")
+                    elif model_name == "Image 2.0 Pro":
+                        model_option_xpath = get_element("image_generation", "model_image_2_0_pro")
+                    else:
+                        model_option_xpath = get_element("image_generation", "model_image_3_0")
+                    print(f"[调试] model_option_xpath: {model_option_xpath}")
+                    model_option = page.locator(f"xpath={model_option_xpath}")
+                    print(f"[调试] model_option count: {model_option.count()}")
+                    model_option.wait_for(state="visible", timeout=5000)
+                    HumanBehavior.human_like_click(page, model_option)
+                    HumanBehavior.random_delay(0.5, 1.0)
+                    print(f"[DreaminaOperator] ✅ 已选择模型: {model_name}")
+                    generate_image_on_page._model_selected = True
+                except Exception as e:
+                    print(f"[DreaminaOperator] ⚠️ 模型选择失败: {e}")
 
-        # 点击生成按钮（简化版）
-        print("[DreaminaOperator] 等待 2 秒后点击生成按钮...")
-        time.sleep(2)
+        # 获取生成按钮
         generate_button_selector = get_element("image_generation", "generate_button")
         generate_button = page.locator(generate_button_selector)
-        generate_button.wait_for(state="visible", timeout=30000)
-        generate_button.click(timeout=30000)
+        
+        # 准备生成（直接点击生成按钮）
+        if not HumanBehavior.prepare_for_generation(page, generate_button):
+            print("[DreaminaOperator] ❌ 点击生成按钮失败")
+            return final_image_elements
+        
         print("[DreaminaOperator] '生成' 按钮已点击.")
-        print("[DreaminaOperator] 点击生成后，等待2秒以便结果块初步加载...")
-        time.sleep(2)
+        
+        # 随机等待
+        HumanBehavior.random_delay(1.0, 2.0)
 
         # === 检测排队状态并等待消失 ===
         queueing_xpath = get_element("image_generation", "queueing_status")
@@ -343,7 +381,8 @@ def generate_image_on_page(page, prompt_info):
                     print("[DreaminaOperator] ✅ 排队状态已消失")
                     break
                 
-                time.sleep(3)
+                # 随机等待
+                HumanBehavior.random_delay(15, 25)
             else:
                 print(f"[DreaminaOperator] ⚠️ 排队等待超时，继续检测生成状态")
                 
@@ -352,7 +391,8 @@ def generate_image_on_page(page, prompt_info):
         except Exception as e:
             print(f"[DreaminaOperator] ⚠️ 检测排队状态时出错: {e}")
 
-        smart_delay("排队检测完成")
+        # 随机等待
+        HumanBehavior.random_delay(1.0, 2.0)
 
         # === 检测生成中状态并等待内容出现后滚动 ===
         generating_xpath = get_element("image_generation", "generating_status")
@@ -373,7 +413,7 @@ def generate_image_on_page(page, prompt_info):
         
         # 等待生成中状态完全消失
         MAX_GENERATION_WAIT_SECONDS = get_wait_time("generation_timeout")
-        POLL_INTERVAL_SECONDS = get_wait_time("poll_interval")
+        POLL_INTERVAL_SECONDS = 30  # 每30秒检测一次
         
         print(f"[DreaminaOperator] ⏳ 等待生成完成（最多{MAX_GENERATION_WAIT_SECONDS//60}分钟）...")
         
@@ -387,28 +427,32 @@ def generate_image_on_page(page, prompt_info):
                 break
             
             print(f"[DreaminaOperator] 🔄 仍在生成中，继续等待...")
-            time.sleep(POLL_INTERVAL_SECONDS)
+            # 随机等待
+            HumanBehavior.random_delay(POLL_INTERVAL_SECONDS - 1, POLL_INTERVAL_SECONDS + 1)
         else:
             print(f"[DreaminaOperator] ⏰ 生成超时，尝试检测部分完成的图片")
         
-        smart_delay("生成状态检测完成")
+        # 随机等待
+        HumanBehavior.random_delay(1.0, 2.0)
         
-        # === 检测完成状态容器 ===
+        # === 检测生成结果 ===
+        # 1. 先检测是否有无法生成的提示（prompt_error）
+        error_xpath = get_element("image_generation", "prompt_error")
+        error_element = page.locator(f"xpath={error_xpath}")
+        if error_element.count() > 0:
+            print("[DreaminaOperator] ⚠️ 检测到提示词有问题，无法生成")
+            from excel_processor import mark_prompt_as_processed, get_excel_settings
+            excel_settings = get_excel_settings()
+            status_column = excel_settings["status_column"]
+            mark_prompt_as_processed(excel_file_path, excel_row_num, status_column, "提示词有问题，需修改")
+            return []
+
+        # 2. 检测是否有完成状态容器（正常图片生成）
         completed_xpath = get_element("image_generation", "completed_container")
-        
         print("[DreaminaOperator] 🔍 开始检测完成状态容器...")
-        
-        # 最终确保页面位置正确
-        try:
-            print("[DreaminaOperator] 🎯 最终定位：确保页面滚动到结果区域...")
-            simple_scroll_down(page, "最终定位滚动")
-        except Exception as scroll_error:
-            print(f"[DreaminaOperator] 最终滚动时出现问题: {scroll_error}")
-        
         try:
             page.wait_for_selector(f"xpath={completed_xpath}", timeout=30000)
             completed_container = page.locator(f"xpath={completed_xpath}")
-            
             if completed_container.count() > 0:
                 print("[DreaminaOperator] ✅ 找到完成状态容器")
                 
@@ -442,9 +486,11 @@ def generate_image_on_page(page, prompt_info):
                         break
                     elif loaded_count >= 1:
                         print(f"[DreaminaOperator] 已加载{loaded_count}张图片，继续等待...")
-                        time.sleep(5)
+                        # 随机等待
+                        HumanBehavior.random_delay(8, 12)
                     else: 
-                        time.sleep(3)
+                        # 随机等待
+                        HumanBehavior.random_delay(2, 4)
                 
                 if not final_image_elements:
                     print("[DreaminaOperator] ⚠️ 图片加载超时，尝试使用已加载的图片")
@@ -470,7 +516,8 @@ def generate_image_on_page(page, prompt_info):
         
         print(f"[DreaminaOperator] ✅ 成功获得 {len(final_image_elements)} 张图片，开始保存...")
         
-        smart_delay("准备保存图片")
+        # 随机等待
+        HumanBehavior.random_delay(1.0, 2.0)
         
         # 直接进入保存流程
         saved_count = 0
@@ -503,68 +550,26 @@ def generate_image_on_page(page, prompt_info):
                 os.makedirs(os.path.dirname(full_save_path), exist_ok=True)
                 
                 save_success = False
-
-                if image_src.startswith('data:image'):
-                    print(f"[DreaminaOperator] 检测到 base64 图片数据，正在解码并转换为JPG...")
+                
+                # 随机等待
+                HumanBehavior.random_delay(0.5, 1.0)
+                
+                if image_src.startswith('https://'):
+                    print(f"[DreaminaOperator] 检测到 https URL，尝试下载...")
                     try:
-                        header, encoded = image_src.split(',', 1)
-                        image_data = base64.b64decode(encoded)
+                        response = requests.get(image_src, timeout=30)
+                        response.raise_for_status()
                         
-                        if PIL_AVAILABLE:
-                            img = Image.open(io.BytesIO(image_data))
+                        with open(full_save_path, 'wb') as f:
+                            f.write(response.content)
                             
-                            if img.mode in ('RGBA', 'LA'):
-                                background = Image.new('RGB', img.size, (255, 255, 255))
-                                if img.mode == 'RGBA':
-                                    background.paste(img, mask=img.split()[-1])
-                                else:
-                                    background.paste(img)
-                                img = background
-                            elif img.mode != 'RGB':
-                                img = img.convert('RGB')
-                            
-                            img.save(full_save_path, 'JPEG', quality=95, optimize=True)
-                        else:
-                            with open(full_save_path, 'wb') as f:
-                                f.write(image_data)
-                        
                         save_success = True
-                        print(f"[DreaminaOperator] ✅ 第 {i+1} 张图片保存成功: {image_filename}")
-                    except Exception as e:
-                        error_msg = f"解码/保存 base64 图片为JPG失败: {e}"
+                        print(f"[DreaminaOperator] ✅ 第 {i+1} 张图片下载成功: {image_filename}")
+                    except Exception as e_download:
+                        error_msg = f"https 图片下载失败: {e_download}"
                         print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
                         save_errors.append(error_msg)
                         
-                elif image_src.startswith('http'):
-                    print(f"[DreaminaOperator] 检测到图片 URL，正在下载并转换为JPG...")
-                    try:
-                        img_response = requests.get(image_src, timeout=60)
-                        img_response.raise_for_status()
-                        
-                        if PIL_AVAILABLE:
-                            img = Image.open(io.BytesIO(img_response.content))
-                            
-                            if img.mode in ('RGBA', 'LA'):
-                                background = Image.new('RGB', img.size, (255, 255, 255))
-                                if img.mode == 'RGBA':
-                                    background.paste(img, mask=img.split()[-1])
-                                else:
-                                    background.paste(img)
-                                img = background
-                            elif img.mode != 'RGB':
-                                img = img.convert('RGB')
-                            
-                            img.save(full_save_path, 'JPEG', quality=95, optimize=True)
-                        else:
-                            with open(full_save_path, 'wb') as f:
-                                f.write(img_response.content)
-                        
-                        save_success = True
-                        print(f"[DreaminaOperator] ✅ 第 {i+1} 张图片下载并转换为JPG成功: {image_filename}")
-                    except requests.RequestException as e:
-                        error_msg = f"下载图片 URL 失败: {e}"
-                        print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
-                        save_errors.append(error_msg)
                 elif image_src.startswith('blob:'):
                     print(f"[DreaminaOperator] 检测到 blob URL，尝试截图并转换为JPG...")
                     try:
@@ -599,56 +604,36 @@ def generate_image_on_page(page, prompt_info):
                         error_msg = f"blob 图片元素截图转JPG失败: {e_screenshot}"
                         print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
                         save_errors.append(error_msg)
+                
+                if save_success:
+                    saved_count += 1
+                    print(f"[DreaminaOperator] ✅ 第 {i+1} 张图片保存成功: {image_filename}")
                 else:
-                    error_msg = f"未识别的图片源格式: {image_src[:60]}..."
+                    error_msg = f"第 {i+1} 张图片保存失败"
                     print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
                     save_errors.append(error_msg)
                     
-                if save_success:
-                    saved_count += 1
-                    # 验证文件确实保存成功
-                    if os.path.exists(full_save_path) and os.path.getsize(full_save_path) > 0:
-                        print(f"[DreaminaOperator] 📁 文件验证成功: {full_save_path} ({os.path.getsize(full_save_path)} bytes)")
-                    else:
-                        print(f"[DreaminaOperator] ⚠️ 文件验证失败: {full_save_path}")
-                        saved_count -= 1
-                        save_errors.append(f"文件验证失败: {image_filename}")
-                
-                # 在保存图片之间添加智能延时（最后一张图片除外）
-                if i < total_images - 1:
-                    smart_delay("图片保存间隔")
-                        
             except Exception as e:
-                error_msg = f"保存第 {i+1} 张图片时发生意外错误: {e}"
+                error_msg = f"保存第 {i+1} 张图片时发生错误: {e}"
                 print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
                 save_errors.append(error_msg)
-                continue
         
-        # 保存完成后的详细报告
-        print(f"\n[DreaminaOperator] 📊 图片保存完成报告 (Row {excel_row_num}):")
-        print(f"  总计图片数: {total_images}")
-        print(f"  成功保存: {saved_count}")
-        print(f"  保存失败: {len(save_errors)}")
-        print(f"  成功率: {saved_count/total_images*100:.1f}%" if total_images > 0 else "  成功率: 0%")
-        
-        if save_errors:
-            print(f"  错误详情:")
-            for i, error in enumerate(save_errors[:3], 1):
-                print(f"    {i}. {error}")
-            if len(save_errors) > 3:
-                print(f"    ... 还有 {len(save_errors) - 3} 个错误")
-        
-        # 判断成功标准
-        min_success_threshold = max(1, min(2, total_images // 2))
-        is_success = saved_count >= min_success_threshold
-        
+        # 检查保存结果
+        is_success = saved_count > 0
         if is_success:
-            print(f"[DreaminaOperator] ✅ 图片保存任务被认为成功 (保存了 {saved_count}/{total_images} 张)")
+            print(f"[DreaminaOperator] ✅ 成功保存 {saved_count}/{total_images} 张图片")
+            if save_errors:
+                print(f"[DreaminaOperator] ⚠️ 有 {len(save_errors)} 个保存错误:")
+                for error in save_errors:
+                    print(f"  - {error}")
         else:
-            print(f"[DreaminaOperator] ❌ 图片保存任务失败 (仅保存了 {saved_count}/{total_images} 张)")
-            
-        # 检测并显示当前积分余额
+            print(f"[DreaminaOperator] ❌ 所有 {total_images} 张图片保存失败")
+            for error in save_errors:
+                print(f"  - {error}")
+        
+        # 生成后检测积分余额
         print(f"\n[DreaminaOperator] 💰 生成后积分检测...")
+        
         try:
             points_selector = get_element("points_monitoring", "primary_selector")
             points_monitor = PointsMonitor(custom_points_selector=points_selector)
@@ -681,7 +666,8 @@ def generate_image_on_page(page, prompt_info):
         except Exception as e:
             print(f"[DreaminaOperator] ❌ 积分检测失败: {e}")
         
-        smart_delay("任务完成")
+        # 随机等待
+        HumanBehavior.random_delay(1.0, 2.0)
         
         # 返回保存成功的图片信息列表
         if is_success:
