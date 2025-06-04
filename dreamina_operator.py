@@ -70,8 +70,24 @@ def navigate_and_setup_dreamina_page(context, target_url):
             print("[DreaminaOperator] 没有找到任何页面，创建新页面")
             page = context.new_page()
         else:
-            page = pages[0]
-            print(f"[DreaminaOperator] 使用现有页面: {page.url}")
+            # 关闭所有无关的标签页
+            print("[DreaminaOperator] 🔍 检查并关闭无关标签页...")
+            for p in pages:
+                try:
+                    if p.url != target_url:
+                        print(f"[DreaminaOperator] 关闭无关标签页: {p.url}")
+                        p.close()
+                except Exception as e:
+                    print(f"[DreaminaOperator] ⚠️ 关闭标签页时出错: {e}")
+            
+            # 重新获取页面列表
+            pages = context.pages
+            if pages:
+                page = pages[0]
+                print(f"[DreaminaOperator] 使用现有页面: {page.url}")
+            else:
+                print("[DreaminaOperator] 没有可用页面，创建新页面")
+                page = context.new_page()
         
         # 导航到目标URL
         if page.url != target_url:
@@ -93,6 +109,16 @@ def navigate_and_setup_dreamina_page(context, target_url):
         # 确保页面稳定
         time.sleep(5)
         
+        # 再次检查并关闭可能新打开的无关标签页
+        print("[DreaminaOperator] 🔍 再次检查并关闭无关标签页...")
+        for p in context.pages:
+            try:
+                if p != page and p.url != target_url:
+                    print(f"[DreaminaOperator] 关闭新打开的无关标签页: {p.url}")
+                    p.close()
+            except Exception as e:
+                print(f"[DreaminaOperator] ⚠️ 关闭标签页时出错: {e}")
+        
         # 检查页面是否正常加载
         try:
             page_title = page.title()
@@ -103,6 +129,29 @@ def navigate_and_setup_dreamina_page(context, target_url):
                 time.sleep(5)
         except Exception as e:
             print(f"[DreaminaOperator] ⚠️ 检查页面标题时出错: {e}")
+            
+        # 在页面加载完成后立即选择模型
+        if not hasattr(navigate_and_setup_dreamina_page, "_model_selected") or not navigate_and_setup_dreamina_page._model_selected:
+            try:
+                import json
+                with open('user_config.json', 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                model_name = config.get("image_settings", {}).get("default_model", "Image 3.0")
+                max_retries = 3
+                retry_count = 0
+                
+                while retry_count < max_retries:
+                    if select_model(page, model_name):
+                        navigate_and_setup_dreamina_page._model_selected = True
+                        break
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        print(f"[DreaminaOperator] ⚠️ 模型选择失败，第 {retry_count} 次重试...")
+                        HumanBehavior.random_delay(2, 3)
+                else:
+                    print("[DreaminaOperator] ⚠️ 模型选择失败，继续流程")
+            except Exception as e:
+                print(f"[DreaminaOperator] ⚠️ 模型选择过程出错: {e}")
         
         return page
         
@@ -231,6 +280,86 @@ def select_aspect_ratio(page, aspect_ratio="9:16"):
         print(f"[DreaminaOperator] ❌ 选择图片尺寸失败: {e}")
         return False
 
+def select_model(page, model_name="Image 3.0"):
+    """
+    选择图片生成模型
+    
+    Args:
+        page: Playwright页面对象
+        model_name: 模型名称
+        
+    Returns:
+        bool: 是否成功选择模型
+    """
+    try:
+        print(f"[DreaminaOperator] 🤖 开始选择模型: {model_name}")
+        
+        # 获取模型选择器
+        model_selector_xpath = get_element("image_generation", "model_selector")
+        if not model_selector_xpath:
+            print("[DreaminaOperator] ❌ 未找到模型选择器配置")
+            return False
+            
+        # 等待并点击模型选择器
+        model_selector = page.locator(f"xpath={model_selector_xpath}")
+        if not model_selector.is_visible(timeout=10000):
+            print("[DreaminaOperator] ❌ 模型选择器不可见")
+            return False
+            
+        # 点击模型选择器
+        HumanBehavior.human_like_click(page, model_selector)
+        HumanBehavior.random_delay(0.8, 1.2)
+        
+        # 根据模型名称选择对应的选项
+        if model_name == "Image 3.0":
+            model_option_xpath = get_element("image_generation", "model_image_3_0")
+        elif model_name == "Image 2.1":
+            model_option_xpath = get_element("image_generation", "model_image_2_1")
+        elif model_name == "Image 2.0 Pro":
+            model_option_xpath = get_element("image_generation", "model_image_2_0_pro")
+        else:
+            model_option_xpath = get_element("image_generation", "model_image_3_0")
+            
+        if not model_option_xpath:
+            print(f"[DreaminaOperator] ❌ 未找到模型 {model_name} 的选项配置")
+            return False
+            
+        # 等待并点击模型选项
+        model_option = page.locator(f"xpath={model_option_xpath}")
+        if not model_option.is_visible(timeout=5000):
+            print(f"[DreaminaOperator] ❌ 模型选项 {model_name} 不可见")
+            return False
+            
+        HumanBehavior.human_like_click(page, model_option)
+        HumanBehavior.random_delay(0.5, 1.0)
+        
+        # 验证模型是否选择成功
+        try:
+            # 等待模型选择器更新
+            time.sleep(1)
+            
+            # 获取模型选择器中的文本内容
+            model_text = model_selector.locator("//span[contains(@class, 'text-')]").text_content()
+            if not model_text:
+                print("[DreaminaOperator] ❌ 无法获取模型选择器中的文本")
+                return False
+                
+            # 检查文本是否包含预期的模型名称
+            if model_name not in model_text:
+                print(f"[DreaminaOperator] ❌ 模型选择验证失败: 期望 '{model_name}', 实际 '{model_text}'")
+                return False
+                
+            print(f"[DreaminaOperator] ✅ 成功选择并验证模型: {model_name}")
+            return True
+            
+        except Exception as verify_error:
+            print(f"[DreaminaOperator] ❌ 验证模型选择时出错: {verify_error}")
+            return False
+        
+    except Exception as e:
+        print(f"[DreaminaOperator] ❌ 选择模型时出错: {e}")
+        return False
+
 def generate_image_on_page(page, prompt_info, should_select_aspect_ratio=True):
     """
     输入提示词，选择尺寸，点击生成，等待图片加载完成，并保存所有生成的图片。
@@ -303,7 +432,7 @@ def generate_image_on_page(page, prompt_info, should_select_aspect_ratio=True):
         # 随机等待
         HumanBehavior.random_delay(1.5, 3.0)
         
-        # 只在首次生成时选择图片尺寸和模型
+        # 只在首次生成时选择图片尺寸
         if should_select_aspect_ratio:
             try:
                 import json
@@ -313,40 +442,6 @@ def generate_image_on_page(page, prompt_info, should_select_aspect_ratio=True):
                 select_aspect_ratio(page, default_aspect_ratio)
             except Exception as e:
                 print(f"[DreaminaOperator] ❌ 选择图片尺寸失败: {e}，继续生成流程")
-            
-            # ===== 模型选择逻辑（只在网页会话第一次执行） =====
-            if not hasattr(generate_image_on_page, "_model_selected") or not generate_image_on_page._model_selected:
-                try:
-                    print(f"[调试] 当前config['image_settings']: {config.get('image_settings')}")
-                    model_name = config.get("image_settings", {}).get("default_model", "Image 3.0")
-                    print(f"[调试] model_name: {model_name}")
-                    model_selector_xpath = get_element("image_generation", "model_selector")
-                    print(f"[调试] model_selector_xpath: {model_selector_xpath}")
-                    model_selector = page.locator(f"xpath={model_selector_xpath}")
-                    print(f"[调试] model_selector count: {model_selector.count()}")
-                    model_selector.wait_for(state="visible", timeout=10000)
-                    HumanBehavior.random_delay(0.5, 1.0)
-                    HumanBehavior.human_like_click(page, model_selector)
-                    HumanBehavior.random_delay(0.8, 1.2)
-
-                    if model_name == "Image 3.0":
-                        model_option_xpath = get_element("image_generation", "model_image_3_0")
-                    elif model_name == "Image 2.1":
-                        model_option_xpath = get_element("image_generation", "model_image_2_1")
-                    elif model_name == "Image 2.0 Pro":
-                        model_option_xpath = get_element("image_generation", "model_image_2_0_pro")
-                    else:
-                        model_option_xpath = get_element("image_generation", "model_image_3_0")
-                    print(f"[调试] model_option_xpath: {model_option_xpath}")
-                    model_option = page.locator(f"xpath={model_option_xpath}")
-                    print(f"[调试] model_option count: {model_option.count()}")
-                    model_option.wait_for(state="visible", timeout=5000)
-                    HumanBehavior.human_like_click(page, model_option)
-                    HumanBehavior.random_delay(0.5, 1.0)
-                    print(f"[DreaminaOperator] ✅ 已选择模型: {model_name}")
-                    generate_image_on_page._model_selected = True
-                except Exception as e:
-                    print(f"[DreaminaOperator] ⚠️ 模型选择失败: {e}")
 
         # 获取生成按钮
         generate_button_selector = get_element("image_generation", "generate_button")
@@ -555,55 +650,131 @@ def generate_image_on_page(page, prompt_info, should_select_aspect_ratio=True):
                 HumanBehavior.random_delay(0.5, 1.0)
                 
                 if image_src.startswith('https://'):
-                    print(f"[DreaminaOperator] 检测到 https URL，尝试下载...")
+                    print(f"[DreaminaOperator] 检测到 https URL，尝试使用比特浏览器下载...")
+                    
+                    # URL 验证和清理
                     try:
-                        response = requests.get(image_src, timeout=30)
-                        response.raise_for_status()
+                        from urllib.parse import urlparse, unquote
                         
-                        with open(full_save_path, 'wb') as f:
-                            f.write(response.content)
+                        # 解码 URL
+                        decoded_url = unquote(image_src)
+                        print(f"[DreaminaOperator] 解码后的URL: {decoded_url}")
+                        
+                        # 解析 URL
+                        parsed_url = urlparse(decoded_url)
+                        if not parsed_url.netloc or not parsed_url.path:
+                            raise Exception("URL格式不正确")
                             
-                        save_success = True
-                        print(f"[DreaminaOperator] ✅ 第 {i+1} 张图片下载成功: {image_filename}")
-                    except Exception as e_download:
-                        error_msg = f"https 图片下载失败: {e_download}"
+                        # 检查域名
+                        if not parsed_url.netloc.endswith('.ibyteimg.com'):
+                            print(f"[DreaminaOperator] ⚠️ 警告：非预期的图片域名: {parsed_url.netloc}")
+                            
+                        # 检查文件扩展名
+                        if not any(decoded_url.lower().endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                            print(f"[DreaminaOperator] ⚠️ 警告：URL可能不是图片文件")
+                            
+                        # 使用清理后的URL
+                        image_src = decoded_url
+                        
+                    except Exception as url_err:
+                        error_msg = f"URL验证失败: {url_err}"
                         print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
                         save_errors.append(error_msg)
-                        
-                elif image_src.startswith('blob:'):
-                    print(f"[DreaminaOperator] 检测到 blob URL，尝试截图并转换为JPG...")
-                    try:
-                        if PIL_AVAILABLE:
-                            temp_png_path = full_save_path.replace('.jpg', '_temp.png')
-                            img_element.screenshot(path=temp_png_path)
+                        continue
+                    
+                    max_retries = 3
+                    retry_count = 0
+                    
+                    while retry_count < max_retries:
+                        try:
+                            # 使用当前页面的上下文下载图片
+                            print(f"[DreaminaOperator] 使用当前页面下载图片...")
                             
-                            img = Image.open(temp_png_path)
-                            
-                            if img.mode in ('RGBA', 'LA'):
-                                background = Image.new('RGB', img.size, (255, 255, 255))
-                                if img.mode == 'RGBA':
-                                    background.paste(img, mask=img.split()[-1])
-                                else:
-                                    background.paste(img)
-                                img = background
-                            elif img.mode != 'RGB':
-                                img = img.convert('RGB')
-                            
-                            img.save(full_save_path, 'JPEG', quality=95, optimize=True)
-                            
+                            # 在新标签页中打开图片URL
+                            new_page = page.context.new_page()
                             try:
-                                os.remove(temp_png_path)
-                            except:
-                                pass
-                        else:
-                            img_element.screenshot(path=full_save_path)
-                        
-                        save_success = True
-                        print(f"[DreaminaOperator] ✅ 第 {i+1} 张图片截图并转换为JPG成功: {image_filename}")
-                    except Exception as e_screenshot:
-                        error_msg = f"blob 图片元素截图转JPG失败: {e_screenshot}"
-                        print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
-                        save_errors.append(error_msg)
+                                # 设置页面超时
+                                new_page.set_default_timeout(30000)
+                                
+                                # 访问图片URL
+                                response = new_page.goto(image_src, wait_until='networkidle')
+                                
+                                if not response:
+                                    raise Exception("页面加载失败")
+                                    
+                                # 检查响应状态
+                                if response.status != 200:
+                                    raise Exception(f"HTTP状态码错误: {response.status}")
+                                
+                                # 获取页面内容
+                                content = new_page.content()
+                                
+                                # 检查内容类型
+                                content_type = response.headers.get('content-type', '').lower()
+                                if not any(img_type in content_type for img_type in ['image/', 'application/octet-stream']):
+                                    raise Exception(f"非图片内容类型: {content_type}")
+                                
+                                # 获取图片数据
+                                image_data = new_page.evaluate("""() => {
+                                    const img = document.querySelector('img');
+                                    if (!img) return null;
+                                    
+                                    // 创建canvas
+                                    const canvas = document.createElement('canvas');
+                                    canvas.width = img.naturalWidth;
+                                    canvas.height = img.naturalHeight;
+                                    
+                                    // 绘制图片
+                                    const ctx = canvas.getContext('2d');
+                                    ctx.drawImage(img, 0, 0);
+                                    
+                                    // 转换为base64
+                                    return canvas.toDataURL('image/jpeg', 1.0);
+                                }""")
+                                
+                                if not image_data:
+                                    raise Exception("无法获取图片数据")
+                                    
+                                # 解码base64数据
+                                import base64
+                                image_data = image_data.split(',')[1]
+                                image_bytes = base64.b64decode(image_data)
+                                
+                                # 验证图片内容
+                                if not image_bytes or len(image_bytes) < 1000:  # 假设小于1KB的不是有效图片
+                                    raise Exception("下载的图片内容无效")
+                                    
+                                # 使用二进制模式写入文件
+                                with open(full_save_path, 'wb') as f:
+                                    f.write(image_bytes)
+                                    
+                                # 验证保存的文件
+                                if not os.path.exists(full_save_path) or os.path.getsize(full_save_path) < 1000:
+                                    raise Exception("保存的图片文件无效")
+                                    
+                                save_success = True
+                                print(f"[DreaminaOperator] ✅ 第 {i+1} 张图片下载成功: {image_filename}")
+                                break
+                                
+                            finally:
+                                # 关闭新标签页
+                                new_page.close()
+                            
+                        except Exception as e_download:
+                            retry_count += 1
+                            error_msg = f"下载错误 (尝试 {retry_count}/{max_retries}): {e_download}"
+                            print(f"[DreaminaOperator] ⚠️ (Row {excel_row_num}) {error_msg}")
+                            
+                            if retry_count < max_retries:
+                                wait_time = 5 * retry_count  # 递增等待时间
+                                print(f"[DreaminaOperator] 等待 {wait_time} 秒后重试...")
+                                time.sleep(wait_time)
+                            else:
+                                save_errors.append(error_msg)
+                else:
+                    error_msg = f"第 {i+1} 张图片的URL格式不支持: {image_src}"
+                    print(f"[DreaminaOperator] ❌ (Row {excel_row_num}) {error_msg}")
+                    save_errors.append(error_msg)
                 
                 if save_success:
                     saved_count += 1

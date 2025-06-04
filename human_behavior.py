@@ -68,21 +68,21 @@ class HumanBehavior:
     
     @staticmethod
     def human_like_click(page: Page, element: Locator) -> bool:
-        """更真实地模拟人类点击行为：鼠标移动、悬停、随机偏移后点击，box为None时降级为.click()"""
+        """更真实地模拟人类点击行为：鼠标移动、悬停、点击，box为None时降级为.click()"""
         try:
             element.wait_for(state="visible", timeout=10000)
             box = element.bounding_box()
             if box:
-                # 随机偏移，模拟手抖
-                x = box['x'] + box['width'] * random.uniform(0.2, 0.8)
-                y = box['y'] + box['height'] * random.uniform(0.2, 0.8)
+                # 点击元素中心点
+                x = box['x'] + box['width'] / 2
+                y = box['y'] + box['height'] / 2
                 # 鼠标移动到目标
                 page.mouse.move(x, y, steps=random.randint(8, 20))
                 # 悬停一会
                 time.sleep(random.uniform(0.2, 0.7))
                 # 点击
                 page.mouse.click(x, y)
-                print("[HumanBehavior] 鼠标移动+悬停+随机偏移点击成功")
+                print("[HumanBehavior] 鼠标移动+悬停+点击成功")
                 return True
             else:
                 # 降级为直接点击
