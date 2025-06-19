@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional
 class SmartDelay:
     """智能延时管理器"""
     
-    def __init__(self, config_path: str = "user_config.json"):
+    def __init__(self, config_path: str = "gui_config.json"):
         """
         初始化智能延时管理器
         

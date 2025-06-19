@@ -7,18 +7,19 @@ import glob
 from pathlib import Path
 import json
 
-def load_config():
+def load_config(config_file="gui_config.json"):
     """加载用户配置"""
     try:
-        with open('user_config.json', 'r', encoding='utf-8') as f:
+        with open(config_file, 'r', encoding='utf-8') as f:
             return json.load(f)
     except Exception as e:
         print(f"[ExcelProcessor] 加载配置文件失败: {e}")
         return {}
 
-def get_excel_settings():
+def get_excel_settings(config=None, config_file="gui_config.json"):
     """获取Excel相关设置"""
-    config = load_config()
+    if config is None:
+        config = load_config(config_file)
     excel_settings = config.get("excel_settings", {})
     return {
         "prompt_column": excel_settings.get("prompt_column", 2),
@@ -134,7 +135,13 @@ def mark_prompt_as_processed(excel_file_path, row_number, status_column=3, statu
             df = df.reindex(columns=range(max_col))
         
         # 标记状态（转换为0基索引）
-        df.iloc[row_number - 1, status_column - 1] = status_text
+        # 确保状态列为object类型以避免数据类型不兼容警告
+        status_col_idx = status_column - 1
+        if status_col_idx < len(df.columns):
+            df.iloc[:, status_col_idx] = df.iloc[:, status_col_idx].astype('object')
+        
+        # 明确转换数据类型，避免警告
+        df.iloc[row_number - 1, status_col_idx] = str(status_text)
         
         # 保存回Excel文件
         df.to_excel(excel_file_path, index=False, header=False, engine='openpyxl')
@@ -143,12 +150,13 @@ def mark_prompt_as_processed(excel_file_path, row_number, status_column=3, statu
     except Exception as e:
         print(f"[ExcelProcessor] 标记Excel文件时出错: {e}")
 
-def get_unprocessed_prompts(root_directory):
+def get_unprocessed_prompts(root_directory, config=None):
     """
     从Excel文件中获取未处理的提示词列表
     
     Args:
         root_directory: Excel文件所在的根目录
+        config: 配置字典，如果为None则从gui_config.json读取
         
     Returns:
         list: 未处理的提示词信息列表
@@ -157,7 +165,7 @@ def get_unprocessed_prompts(root_directory):
     seen_prompts_globally = set()  # 用于全局去重
     
     # 获取Excel设置
-    excel_settings = get_excel_settings()
+    excel_settings = get_excel_settings(config)
     prompt_column = excel_settings["prompt_column"]
     status_column = excel_settings["status_column"]
     status_text = excel_settings["status_text"]
@@ -251,11 +259,11 @@ def get_unprocessed_prompts_from_excel_folder(folder_path, image_save_path="gene
     return get_unprocessed_prompts(folder_path)
 
 # 添加新的兼容性函数
-def get_unprocessed_prompts_from_subfolders(root_directory):
+def get_unprocessed_prompts_from_subfolders(root_directory, config=None):
     """
     兼容性函数：从子文件夹中获取未处理的提示词
     """
-    return get_unprocessed_prompts(root_directory)
+    return get_unprocessed_prompts(root_directory, config)
 
 def get_prompts_from_excel_folder(folder_path):
     """

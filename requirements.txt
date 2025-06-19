@@ -2,4 +2,5 @@ playwright==1.40.0
 pandas==2.1.4
 openpyxl==3.1.2
 requests==2.31.0
-Pillow>=9.0.0 
+Pillow>=9.0.0
+PyQt6>=6.5.0 

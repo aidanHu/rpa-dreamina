@@ -65,7 +65,7 @@ def deleteBrowser(id):  # 删除窗口
           data=json.dumps(json_data), headers=headers).json())
 
 def launch_and_get_debug_address():
-    config_file_path = 'user_config.json'
+    config_file_path = 'gui_config.json'
     browser_id_from_config = None
     cdp_http_endpoint = None
 

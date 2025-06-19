@@ -3,10 +3,21 @@
 
 import re
 import time
+import threading
 from datetime import datetime
 from typing import Optional, Dict
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 from element_config import get_element_list
+import queue
+import json
+
+# 全局积分检测锁，防止多线程同时检测积分
+_points_check_lock = threading.Lock()
+
+# 线程安全的积分缓存（避免频繁跨线程调用）
+_points_cache = {}
+_points_cache_lock = threading.Lock()
+_cache_expiry_seconds = 10  # 缓存10秒
 
 class PointsMonitor:
     """积分监控器"""
@@ -38,7 +49,7 @@ class PointsMonitor:
         
     def check_points(self, page: Page, timeout: int = 10000) -> Optional[int]:
         """
-        检查当前页面的积分余额
+        检查当前页面的积分余额 - 最终线程安全版本
         
         Args:
             page: Playwright页面对象
@@ -47,35 +58,215 @@ class PointsMonitor:
         Returns:
             int: 积分余额，如果无法获取则返回None
         """
+        page_id = id(page)
+        current_time = time.time()
+        current_thread_id = threading.current_thread().ident
+        
+        # 🚀 首先检查缓存
+        with _points_cache_lock:
+            if page_id in _points_cache:
+                cache_entry = _points_cache[page_id]
+                if current_time - cache_entry['timestamp'] < _cache_expiry_seconds:
+                    print(f"[PointsMonitor] 📱 使用缓存积分: {cache_entry['points']}")
+                    return cache_entry['points']
+                else:
+                    # 缓存过期，删除
+                    del _points_cache[page_id]
+        
+        # 🧵 检测跨线程调用，如果是跨线程则直接返回None，避免greenlet错误
         try:
-            print("[PointsMonitor] 开始检查积分余额...")
+            # 🔍 尝试一次非常简单的测试操作来检测线程兼容性
+            page.url  # 这是一个简单的属性访问，通常安全
+        except Exception as thread_error:
+            if "Cannot switch to a different thread" in str(thread_error) or "greenlet" in str(thread_error).lower():
+                print(f"[PointsMonitor] 🚫 检测到跨线程访问，返回None避免greenlet错误")
+                return None
+            # 其他错误继续处理
+        
+        # 🔒 使用锁保护积分检测，避免多线程冲突
+        with _points_check_lock:
+            try:
+                print("[PointsMonitor] 开始检查积分余额...")
+                
+                # 🔧 尝试简单安全的方法
+                result = self._safe_extract_points(page, timeout)
+                
+                # 🗃️ 更新缓存
+                if result is not None:
+                    with _points_cache_lock:
+                        _points_cache[page_id] = {
+                            'points': result,
+                            'timestamp': current_time
+                        }
+                
+                return result
+                
+            except Exception as e:
+                # 🚫 如果遇到greenlet错误，直接返回None
+                if "Cannot switch to a different thread" in str(e) or "greenlet" in str(e).lower():
+                    print(f"[PointsMonitor] 🚫 检测到greenlet错误，跳过积分检测")
+                    return None
+                    
+                print(f"[PointsMonitor] ❌ 检查积分时出错: {e}")
+                return None
+
+    def _safe_extract_points(self, page: Page, timeout: int) -> Optional[int]:
+        """安全的积分提取方法 - 最小化页面操作，增强greenlet错误处理"""
+        try:
+            # 🔧 方法1：尝试最简单的页面文本提取
+            try:
+                print("[PointsMonitor] 🔍 尝试页面文本提取...")
+                
+                # 使用try-catch包装每个页面操作
+                page_text = None
+                try:
+                    page_text = page.text_content("body")
+                except Exception as pe:
+                    # 🚫 检查是否是greenlet错误
+                    if "Cannot switch to a different thread" in str(pe) or "greenlet" in str(pe).lower():
+                        print(f"[PointsMonitor] 🚫 text_content遇到greenlet错误，跳过")
+                        return None
+                    
+                    # 如果直接text_content失败，尝试其他方法
+                    print(f"[PointsMonitor] ⚠️ text_content失败: {pe}")
+                    try:
+                        # 尝试通过evaluate获取文本
+                        page_text = page.evaluate("() => document.body.innerText")
+                    except Exception as ee:
+                        if "Cannot switch to a different thread" in str(ee) or "greenlet" in str(ee).lower():
+                            print(f"[PointsMonitor] 🚫 evaluate遇到greenlet错误，跳过")
+                            return None
+                        print(f"[PointsMonitor] ⚠️ evaluate也失败: {ee}")
+                        page_text = None
+                
+                if page_text:
+                    points = self._parse_points_from_page_text(page_text)
+                    if points is not None:
+                        print(f"[PointsMonitor] ✅ 从页面文本获取积分: {points}")
+                        return points
+                        
+            except Exception as e:
+                if "Cannot switch to a different thread" in str(e) or "greenlet" in str(e).lower():
+                    print(f"[PointsMonitor] 🚫 页面文本提取遇到greenlet错误，跳过")
+                    return None
+                print(f"[PointsMonitor] ⚠️ 页面文本提取失败: {e}")
             
-            # 方法1: 尝试从页面元素中提取积分信息
-            points = self._extract_points_from_elements(page, timeout)
-            if points is not None:
-                print(f"[PointsMonitor] ✅ 从页面元素获取积分: {points}")
-                return points
+            # 🔧 方法2：尝试特定元素提取（更安全的方式）
+            try:
+                print("[PointsMonitor] 🔍 尝试元素提取...")
                 
-            # 方法2: 检查是否有积分不足的提示
-            if self._check_insufficient_points_warning(page):
-                print("[PointsMonitor] ⚠️ 检测到积分不足提示，返回积分为0")
-                return 0
+                # 只尝试最可靠的选择器
+                reliable_selectors = [
+                    "//span[contains(@class, 'creditText')]",
+                    "//span[contains(text(), '积分')]",
+                ]
                 
-            # 方法3: 尝试从页面文本中提取积分
-            points = self._extract_points_from_page_text(page)
-            if points is not None:
-                print(f"[PointsMonitor] ✅ 从页面文本获取积分: {points}")
-                return points
+                for selector in reliable_selectors:
+                    try:
+                        elements = page.locator(f"xpath={selector}")
+                        count = elements.count()
+                        if count > 0:
+                            for i in range(min(count, 3)):  # 最多检查3个元素
+                                try:
+                                    element = elements.nth(i)
+                                    if element.is_visible(timeout=1000):  # 短超时
+                                        text = element.text_content()
+                                        if text:
+                                            points = self._parse_points_from_text(text)
+                                            if points is not None:
+                                                print(f"[PointsMonitor] ✅ 从元素获取积分: {points}")
+                                                return points
+                                except Exception as elem_e:
+                                    # 🚫 检查greenlet错误
+                                    if "Cannot switch to a different thread" in str(elem_e) or "greenlet" in str(elem_e).lower():
+                                        print(f"[PointsMonitor] 🚫 元素操作遇到greenlet错误，跳过此元素")
+                                        continue
+                                    # 单个元素失败不影响其他元素
+                                    continue
+                    except Exception as sel_e:
+                        # 🚫 检查greenlet错误
+                        if "Cannot switch to a different thread" in str(sel_e) or "greenlet" in str(sel_e).lower():
+                            print(f"[PointsMonitor] 🚫 选择器操作遇到greenlet错误，跳过此选择器")
+                            continue
+                        # 单个选择器失败不影响其他选择器
+                        continue
+                        
+            except Exception as e:
+                if "Cannot switch to a different thread" in str(e) or "greenlet" in str(e).lower():
+                    print(f"[PointsMonitor] 🚫 元素提取遇到greenlet错误，跳过")
+                    return None
+                print(f"[PointsMonitor] ⚠️ 元素提取失败: {e}")
                 
-            print("[PointsMonitor] ⚠️ 无法获取积分信息")
+            # 🔧 方法3：检查积分不足提示
+            try:
+                print("[PointsMonitor] 🔍 检查积分不足提示...")
+                
+                insufficient_indicators = [
+                    "积分不足", "余额不足", "insufficient points"
+                ]
+                
+                for indicator in insufficient_indicators:
+                    try:
+                        locator = page.locator(f"text={indicator}")
+                        if locator.count() > 0:
+                            print("[PointsMonitor] ⚠️ 检测到积分不足提示，返回积分为0")
+                            return 0
+                    except Exception as ind_e:
+                        # 🚫 检查greenlet错误
+                        if "Cannot switch to a different thread" in str(ind_e) or "greenlet" in str(ind_e).lower():
+                            print(f"[PointsMonitor] 🚫 积分不足检查遇到greenlet错误，跳过")
+                            continue
+                        continue
+                        
+            except Exception as e:
+                if "Cannot switch to a different thread" in str(e) or "greenlet" in str(e).lower():
+                    print(f"[PointsMonitor] 🚫 积分不足提示检查遇到greenlet错误，跳过")
+                    return None
+                print(f"[PointsMonitor] ⚠️ 检查积分不足提示失败: {e}")
+            
+            print("[PointsMonitor] ⚠️ 所有方法都失败，无法获取积分信息")
             return None
             
         except Exception as e:
-            print(f"[PointsMonitor] ❌ 检查积分时出错: {e}")
+            if "Cannot switch to a different thread" in str(e) or "greenlet" in str(e).lower():
+                print(f"[PointsMonitor] 🚫 安全积分提取遇到greenlet错误，完全跳过")
+                return None
+            print(f"[PointsMonitor] ❌ 安全积分提取失败: {e}")
+            return None
+
+    def _parse_points_from_page_text(self, page_text: str) -> Optional[int]:
+        """从页面文本中解析积分（纯文本处理，无DOM操作）"""
+        if not page_text:
             return None
             
+        # 使用正则表达式查找积分相关信息
+        patterns = [
+            r'积分[：:]\s*(\d+)',
+            r'剩余积分[：:]\s*(\d+)', 
+            r'余额[：:]\s*(\d+)',
+            r'points[：:]\s*(\d+)',
+            r'remaining\s+points[：:]\s*(\d+)',
+            r'balance[：:]\s*(\d+)',
+            # 查找数字后跟"积分"的模式
+            r'(\d+)\s*积分',
+            r'(\d+)\s*points'
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, page_text, re.IGNORECASE)
+            if matches:
+                try:
+                    points = int(matches[0])
+                    # 验证积分数值的合理性（0-10000之间）
+                    if 0 <= points <= 10000:
+                        return points
+                except ValueError:
+                    continue
+                    
+        return None
+            
     def _extract_points_from_elements(self, page: Page, timeout: int) -> Optional[int]:
-        """从页面元素中提取积分"""
+        """从页面元素中提取积分 - 已在check_points中加锁保护"""
         for selector in self.points_selectors:
             try:
                 # 等待元素出现
@@ -98,10 +289,10 @@ class PointsMonitor:
         return None
         
     def _extract_points_from_page_text(self, page: Page) -> Optional[int]:
-        """从整个页面文本中提取积分"""
+        """从整个页面文本中提取积分 - 已在check_points中加锁保护"""
         try:
             # 获取页面的所有文本内容
-            page_text = page.text_content()
+            page_text = page.text_content("body")
             if not page_text:
                 return None
                 
@@ -172,9 +363,9 @@ class PointsMonitor:
         return None
         
     def _check_insufficient_points_warning(self, page: Page) -> bool:
-        """检查是否有积分不足的警告"""
+        """检查是否有积分不足的警告 - 已在check_points中加锁保护"""
         try:
-            page_text = page.text_content()
+            page_text = page.text_content("body")
             if not page_text:
                 return False
                 
@@ -190,7 +381,7 @@ class PointsMonitor:
             
     def wait_for_points_refresh(self, page: Page, expected_points: int = None, max_wait_seconds: int = 60) -> bool:
         """
-        等待积分刷新
+        等待积分刷新 - 线程安全版本
         
         Args:
             page: Playwright页面对象
@@ -205,11 +396,13 @@ class PointsMonitor:
         start_time = time.time()
         while time.time() - start_time < max_wait_seconds:
             try:
-                # 刷新页面
-                page.reload(wait_until="domcontentloaded")
-                time.sleep(2)
+                # 🔒 使用锁保护页面刷新操作
+                with _points_check_lock:
+                    # 刷新页面
+                    page.reload(wait_until="domcontentloaded")
+                    time.sleep(2)
                 
-                # 检查积分
+                # 检查积分（check_points内部已有锁保护）
                 current_points = self.check_points(page)
                 if current_points is not None:
                     if expected_points is None or current_points >= expected_points:
@@ -228,7 +421,7 @@ class PointsMonitor:
         
     def monitor_points_during_generation(self, page: Page, initial_points: int, callback=None) -> Dict:
         """
-        在图片生成过程中监控积分变化
+        在图片生成过程中监控积分变化 - 线程安全版本
         
         Args:
             page: Playwright页面对象
