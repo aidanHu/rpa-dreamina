@@ -24,3 +24,7 @@ __pycache__/
 # 忽略IDE配置
 .vscode/
 .idea/
+DreaminaRPA.spec
+requirements_build.txt
+build_exe.py
+build.bat

@@ -783,6 +783,15 @@ def run_gui():
     """运行GUI应用"""
     import os
     
+    # 嵌入式资源处理
+    try:
+        from resource_helper import ensure_config_files
+        # 确保配置文件可用
+        ensure_config_files()
+    except ImportError:
+        # 开发环境，忽略
+        pass
+    
     # 抑制Qt相关的调试信息
     os.environ['QT_LOGGING_RULES'] = 'qt.qpa.fonts.debug=false'
     
